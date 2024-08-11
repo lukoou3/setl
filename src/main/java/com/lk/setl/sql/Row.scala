@@ -3,6 +3,8 @@ package com.lk.setl.sql
 import com.lk.setl.sql.types.StructType
 
 trait Row extends Serializable {
+  def numFields: Int = length
+
   /** Number of elements in the Row. */
   def size: Int = length
 

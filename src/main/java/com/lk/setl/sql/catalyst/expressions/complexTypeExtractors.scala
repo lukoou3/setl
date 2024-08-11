@@ -2,6 +2,7 @@ package com.lk.setl.sql.catalyst.expressions
 
 import com.lk.setl.sql.{AnalysisException, ArrayData, Row}
 import com.lk.setl.sql.catalyst.analysis.Resolver
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode}
 import com.lk.setl.sql.catalyst.util.quoteIdentifier
 import com.lk.setl.sql.types._
 
@@ -93,6 +94,24 @@ case class GetStructField(child: Expression, ordinal: Int, name: Option[String] 
 
   protected override def nullSafeEval(input: Any): Any =
     input.asInstanceOf[Row].get(ordinal)
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    nullSafeCodeGen(ctx, ev, eval => {
+      if (true) {
+        s"""
+          if ($eval.isNullAt($ordinal)) {
+            ${ev.isNull} = true;
+          } else {
+            ${ev.value} = ${CodeGenerator.getValue(eval, dataType, ordinal.toString)};
+          }
+        """
+      } else {
+        s"""
+          ${ev.value} = ${CodeGenerator.getValue(eval, dataType, ordinal.toString)};
+        """
+      }
+    })
+  }
 }
 
 
@@ -138,5 +157,36 @@ case class GetArrayItem(
     }
   }
 
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
+      val index = ctx.freshName("index")
+      val nullCheck = if (child.dataType.asInstanceOf[ArrayType].containsNull) {
+        s"""else if ($eval1.isNullAt($index)) {
+               ${ev.isNull} = true;
+            }
+         """
+      } else {
+        ""
+      }
+
+      val indexOutOfBoundBranch = if (failOnError) {
+        s"""throw new ArrayIndexOutOfBoundsException(
+           |  "Invalid index: " + $index + ", numElements: " + $eval1.numElements()
+           |);
+         """.stripMargin
+      } else {
+        s"${ev.isNull} = true;"
+      }
+
+      s"""
+        final int $index = (int) $eval2;
+        if ($index >= $eval1.numElements() || $index < 0) {
+          $indexOutOfBoundBranch
+        } $nullCheck else {
+          ${ev.value} = ${CodeGenerator.getValue(eval1, dataType, index)};
+        }
+      """
+    })
+  }
 }
 

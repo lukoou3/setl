@@ -2,6 +2,8 @@ package com.lk.setl.sql.catalyst.expressions
 
 import com.lk.setl.sql.Row
 import com.lk.setl.sql.catalyst.analysis.{FunctionRegistry, TypeCheckResult, TypeCoercion}
+import com.lk.setl.sql.catalyst.expressions.codegen.Block.BlockHelper
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode, JavaCode, LiteralValue}
 import com.lk.setl.sql.catalyst.trees.TreeNode
 import com.lk.setl.sql.catalyst.util.truncatedString
 import com.lk.setl.sql.types.{AbstractDataType, DataType}
@@ -10,6 +12,9 @@ import java.util.Locale
 
 
 abstract class Expression extends TreeNode[Expression] {
+
+  def nullable: Boolean = true
+
   /**
    * 能否在查询执行之前静态计算.
    * Returns true when an expression is a candidate for static evaluation before the query is
@@ -32,6 +37,22 @@ abstract class Expression extends TreeNode[Expression] {
   def foldable: Boolean = false
 
   /**
+   * Returns true when the current expression always return the same result for fixed inputs from
+   * children. The non-deterministic expressions should not change in number and order. They should
+   * not be evaluated during the query planning.
+   *
+   * Note that this means that an expression should be considered as non-deterministic if:
+   * - it relies on some mutable internal state, or
+   * - it relies on some implicit input that is not part of the children expression list.
+   * - it has non-deterministic child or children.
+   * - it assumes the input satisfies some certain condition via the child operator.
+   *
+   * An example would be `SparkPartitionID` that relies on the partition id returned by TaskContext.
+   * By default leaf expressions are deterministic as Nil.forall(_.deterministic) returns true.
+   */
+  lazy val deterministic: Boolean = children.forall(_.deterministic)
+
+  /**
    * Workaround scala compiler so that we can call super on lazy vals
    */
   @transient
@@ -42,6 +63,79 @@ abstract class Expression extends TreeNode[Expression] {
   // 计算表达式返回结果, 输入InternalRow
   /** Returns the result of evaluating this expression on a given input Row */
   def eval(input: Row = null): Any
+
+  /**
+   * 返回ExprCode, 包含java源代码, 计算表达式的结果。调用的doGenCode, 子类实现doGenCode
+   * Returns an [[ExprCode]], that contains the Java source code to generate the result of
+   * evaluating the expression on an input row.
+   *
+   * @param ctx a [[CodegenContext]]
+   * @return [[ExprCode]]
+   */
+  def genCode(ctx: CodegenContext): ExprCode = {
+    ctx.subExprEliminationExprs.get(this).map { subExprState =>
+      // This expression is repeated which means that the code to evaluate it has already been added
+      // as a function before. In that case, we just re-use it.
+      ExprCode(ctx.registerComment(this.toString), subExprState.isNull, subExprState.value)
+    }.getOrElse {
+      val isNull = ctx.freshName("isNull")
+      val value = ctx.freshName("value")
+      val eval = doGenCode(ctx, ExprCode(
+        JavaCode.isNullVariable(isNull),
+        JavaCode.variable(value, dataType)))
+      reduceCodeSize(ctx, eval)
+      if (eval.code.toString.nonEmpty) {
+        // Add `this` in the comment.
+        eval.copy(code = ctx.registerComment(this.toString) + eval.code)
+      } else {
+        eval
+      }
+    }
+  }
+
+  private def reduceCodeSize(ctx: CodegenContext, eval: ExprCode): Unit = {
+    // TODO: support whole stage codegen too
+    val splitThreshold = 1024 // SQLConf.get.methodSplitThreshold
+    if (eval.code.length > splitThreshold && ctx.INPUT_ROW != null && ctx.currentVars == null) {
+      val setIsNull = if (!eval.isNull.isInstanceOf[LiteralValue]) {
+        val globalIsNull = ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "globalIsNull")
+        val localIsNull = eval.isNull
+        eval.isNull = JavaCode.isNullGlobal(globalIsNull)
+        s"$globalIsNull = $localIsNull;"
+      } else {
+        ""
+      }
+
+      val javaType = CodeGenerator.javaType(dataType)
+      val newValue = ctx.freshName("value")
+
+      val funcName = ctx.freshName(nodeName)
+      val funcFullName = ctx.addNewFunction(funcName,
+        s"""
+           |private $javaType $funcName(InternalRow ${ctx.INPUT_ROW}) {
+           |  ${eval.code}
+           |  $setIsNull
+           |  return ${eval.value};
+           |}
+           """.stripMargin)
+
+      eval.value = JavaCode.variable(newValue, dataType)
+      eval.code = code"$javaType $newValue = $funcFullName(${ctx.INPUT_ROW});"
+    }
+  }
+
+  /**
+   * 返回可以编译以计算此表达式的Java源代码。默认行为是调用表达式的eval方法。
+   * 具体的表达式实现应该覆盖此内容以进行实际的代码生成。
+   * Returns Java source code that can be compiled to evaluate this expression.
+   * The default behavior is to call the eval method of the expression. Concrete expression
+   * implementations should override this to do actual code generation.
+   *
+   * @param ctx a [[CodegenContext]]
+   * @param ev an [[ExprCode]] with unique terms.
+   * @return an [[ExprCode]] containing the Java source code to generate the given expression
+   */
+  protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode
 
   /**
    * Returns `true` if this expression and all its children have been resolved to a specific schema
@@ -64,6 +158,41 @@ abstract class Expression extends TreeNode[Expression] {
    * and false if any still contains any unresolved placeholders.
    */
   def childrenResolved: Boolean = children.forall(_.resolved)
+
+  /**
+   * 返回一个表达式，其中已尽最大努力以一种保留结果但删除外观变化（区分大小写、交换操作的顺序等）的方式对其进行转换。有关更多详细信息，请参阅规范化。
+   * Returns an expression where a best effort attempt has been made to transform `this` in a way
+   * that preserves the result but removes cosmetic variations (case sensitivity, ordering for
+   * commutative operations, etc.)  See [[Canonicalize]] for more details.
+   *
+   * 其中this.canonicalize==other.canonicalized的确定性表达式将始终得到相同的结果。
+   * `deterministic` expressions where `this.canonicalized == other.canonicalized` will always
+   * evaluate to the same result.
+   */
+  lazy val canonicalized: Expression = {
+    //val canonicalizedChildren = children.map(_.canonicalized)
+    //Canonicalize.execute(withNewChildren(canonicalizedChildren))
+    // TODO 先注释省略这部分逻辑
+    this
+  }
+
+  /**
+   * 当两个表达式总是计算相同的结果时返回true，即使它们在外观上有所不同（即属性中名称的大小写可能不同）。
+   * Returns true when two expressions will always compute the same result, even if they differ
+   * cosmetically (i.e. capitalization of names in attributes may be different).
+   *
+   * See [[Canonicalize]] for more details.
+   */
+  def semanticEquals(other: Expression): Boolean =
+    deterministic && other.deterministic && canonicalized == other.canonicalized
+
+  /**
+   * Returns a `hashCode` for the calculation performed by this expression. Unlike the standard
+   * `hashCode`, an attempt has been made to eliminate cosmetic differences.
+   *
+   * See [[Canonicalize]] for more details.
+   */
+  def semanticHash(): Int = canonicalized.hashCode()
 
   /**
    * Checks the input data types, returns `TypeCheckResult.success` if it's valid,
@@ -120,6 +249,56 @@ trait Unevaluable extends Expression {
   final override def eval(input: Row = null): Any =
     throw new UnsupportedOperationException(s"Cannot evaluate expression: $this")
 
+  final override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    throw new UnsupportedOperationException(s"Cannot generate code for expression: $this")
+}
+
+/**
+ * Expressions that don't have SQL representation should extend this trait.  Examples are
+ * `ScalaUDF`, `ScalaUDAF`, and object expressions like `MapObjects` and `Invoke`.
+ */
+trait NonSQLExpression extends Expression {
+  final override def sql: String = {
+    transform {
+      case a: Attribute => new PrettyAttribute(a)
+      case a: Alias => PrettyAttribute(a.sql, a.dataType)
+    }.toString
+  }
+}
+
+/**
+ * An expression that is nondeterministic.
+ */
+trait Nondeterministic extends Expression {
+  final override lazy val deterministic: Boolean = false
+  final override def foldable: Boolean = false
+
+  @transient
+  private[this] var initialized = false
+
+  /**
+   * Initializes internal states given the current partition index and mark this as initialized.
+   * Subclasses should override [[initializeInternal()]].
+   */
+  final def initialize(partitionIndex: Int): Unit = {
+    initializeInternal(partitionIndex)
+    initialized = true
+  }
+
+  protected def initializeInternal(partitionIndex: Int): Unit
+
+  /**
+   * @inheritdoc
+   * Throws an exception if [[initialize()]] is not called yet.
+   * Subclasses should override [[evalInternal()]].
+   */
+  final override def eval(input: Row = null): Any = {
+    require(initialized,
+      s"Nondeterministic expression ${this.getClass.getName} should be initialized before eval.")
+    evalInternal(input)
+  }
+
+  protected def evalInternal(input: Row): Any
 }
 
 /**
@@ -163,6 +342,50 @@ abstract class UnaryExpression extends Expression {
   protected def nullSafeEval(input: Any): Any =
     sys.error(s"UnaryExpressions must override either eval or nullSafeEval")
 
+  /**
+   * 用于一元表达式生成code block, null值直接返回null, 非null调用f的逻辑
+   * Called by unary expressions to generate a code block that returns null if its parent returns
+   * null, and if not null, use `f` to generate the expression.
+   *
+   * As an example, the following does a boolean inversion (i.e. NOT).
+   * {{{
+   *   defineCodeGen(ctx, ev, c => s"!($c)")
+   * }}}
+   *
+   * @param f function that accepts a variable name and returns Java code to compute the output.
+   */
+  protected def defineCodeGen(
+    ctx: CodegenContext,
+    ev: ExprCode,
+    f: String => String): ExprCode = {
+    nullSafeCodeGen(ctx, ev, eval => {
+      s"${ev.value} = ${f(eval)};"
+    })
+  }
+
+  /**
+   * Called by unary expressions to generate a code block that returns null if its parent returns
+   * null, and if not null, use `f` to generate the expression.
+   *
+   * @param f function that accepts the non-null evaluation result name of child and returns Java
+   *          code to compute the output.
+   */
+  protected def nullSafeCodeGen(
+    ctx: CodegenContext,
+    ev: ExprCode,
+    f: String => String): ExprCode = {
+    val childGen = child.genCode(ctx)
+    val resultCode = f(childGen.value)
+
+    val nullSafeEval = ctx.nullSafeExec(true, childGen.isNull)(resultCode)
+    // 构建自己的插值字符串, implicit class BlockHelper(val sc: StringContext) extends AnyVal
+    ev.copy(code = code"""
+      ${childGen.code}
+      boolean ${ev.isNull} = ${childGen.isNull};
+      ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+      $nullSafeEval
+    """)
+  }
 }
 
 /**
@@ -205,6 +428,54 @@ abstract class BinaryExpression extends Expression {
   protected def nullSafeEval(input1: Any, input2: Any): Any =
     sys.error(s"BinaryExpressions must override either eval or nullSafeEval")
 
+  /**
+   * Short hand for generating binary evaluation code.
+   * If either of the sub-expressions is null, the result of this computation
+   * is assumed to be null.
+   *
+   * @param f accepts two variable names and returns Java code to compute the output.
+   */
+  protected def defineCodeGen(
+    ctx: CodegenContext,
+    ev: ExprCode,
+    f: (String, String) => String): ExprCode = {
+    nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
+      s"${ev.value} = ${f(eval1, eval2)};"
+    })
+  }
+
+  /**
+   * Short hand for generating binary evaluation code.
+   * If either of the sub-expressions is null, the result of this computation
+   * is assumed to be null.
+   *
+   * @param f function that accepts the 2 non-null evaluation result names of children
+   *          and returns Java code to compute the output.
+   */
+  protected def nullSafeCodeGen(
+    ctx: CodegenContext,
+    ev: ExprCode,
+    f: (String, String) => String): ExprCode = {
+    val leftGen = left.genCode(ctx)
+    val rightGen = right.genCode(ctx)
+    val resultCode = f(leftGen.value, rightGen.value)
+
+    val nullSafeEval =
+      leftGen.code + ctx.nullSafeExec(true, leftGen.isNull) {
+        rightGen.code + ctx.nullSafeExec(true, rightGen.isNull) {
+          s"""
+              ${ev.isNull} = false; // resultCode could change nullability.
+              $resultCode
+            """
+        }
+      }
+
+    ev.copy(code = code"""
+      boolean ${ev.isNull} = true;
+      ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+      $nullSafeEval
+    """)
+  }
 }
 
 /**

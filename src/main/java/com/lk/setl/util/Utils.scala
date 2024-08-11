@@ -1,6 +1,11 @@
 package com.lk.setl.util
 
-object Utils {
+import com.lk.setl.Logging
+
+import java.io.IOException
+import scala.util.control.NonFatal
+
+object Utils extends Logging{
   /**
    * Safer than Class obj's getSimpleName which may throw Malformed class name error in scala.
    * This method mimics scalatest's getSimpleNameOfAnObjectsClass.
@@ -61,4 +66,46 @@ object Utils {
       }
     }
   }
+
+  /**
+   * Execute a block of code that returns a value, re-throwing any non-fatal uncaught
+   * exceptions as IOException. This is used when implementing Externalizable and Serializable's
+   * read and write methods, since Java's serializer will not report non-IOExceptions properly;
+   * see SPARK-4080 for more context.
+   */
+  def tryOrIOException[T](block: => T): T = {
+    try {
+      block
+    } catch {
+      case e: IOException =>
+        logError("Exception encountered", e)
+        throw e
+      case NonFatal(e) =>
+        logError("Exception encountered", e)
+        throw new IOException(e)
+    }
+  }
+
+  // scalastyle:off classforname
+  /**
+   * Preferred alternative to Class.forName(className), as well as
+   * Class.forName(className, initialize, loader) with current thread's ContextClassLoader.
+   */
+  def classForName[C](
+    className: String,
+    initialize: Boolean = true): Class[C] = {
+    Class.forName(className, initialize, Thread.currentThread().getContextClassLoader).
+      asInstanceOf[Class[C]]
+    // scalastyle:on classforname
+  }
+
+  /**
+   * Indicates whether Spark is currently running unit tests.
+   */
+  def isTesting: Boolean = {
+    // Scala's `sys.env` creates a ton of garbage by constructing Scala immutable maps, so
+    // we directly use the Java APIs instead.
+    System.getenv("SPARK_TESTING") != null || System.getProperty("spark.testing") != null
+  }
+
 }

@@ -2,8 +2,9 @@ package com.lk.setl.sql.catalyst.expressions
 
 import com.lk.setl.sql.Row
 import com.lk.setl.sql.catalyst.analysis.UnresolvedAttribute
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
 import com.lk.setl.sql.catalyst.util.quoteIdentifier
-import com.lk.setl.sql.types.{DataType, LongType}
+import com.lk.setl.sql.types.{DataType, LongType, NullType}
 
 import java.util.{Objects, UUID}
 
@@ -88,6 +89,13 @@ case class Alias(child: Expression, name: String)(
     childrenResolved && checkInputDataTypes().isSuccess // && !child.isInstanceOf[Generator]
 
   override def eval(input: Row): Any = child.eval(input)
+
+  /** Just a simple passthrough for code generation. */
+  override def genCode(ctx: CodegenContext): ExprCode = child.genCode(ctx)
+
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    throw new IllegalStateException("Alias.doGenCode should not be called.")
+  }
 
   override def dataType: DataType = child.dataType
 
@@ -210,5 +218,32 @@ case class AttributeReference(
   }
 }
 
+/**
+ * A place holder used when printing expressions without debugging information such as the
+ * expression id or the unresolved indicator.
+ */
+case class PrettyAttribute(
+  name: String,
+  dataType: DataType = NullType)
+  extends Attribute with Unevaluable {
+
+  def this(attribute: Attribute) = this(attribute.name, attribute match {
+    case a: AttributeReference => a.dataType
+    case a: PrettyAttribute => a.dataType
+    case _ => NullType
+  })
+
+  override def toString: String = name
+  override def sql: String = toString
+
+  override def newInstance(): Attribute = throw new UnsupportedOperationException
+  override def withQualifier(newQualifier: Seq[String]): Attribute =
+    throw new UnsupportedOperationException
+  override def withName(newName: String): Attribute = throw new UnsupportedOperationException
+  override def qualifier: Seq[String] = throw new UnsupportedOperationException
+  override def exprId: Long = throw new UnsupportedOperationException
+  override def withExprId(newExprId: Long): Attribute =
+    throw new UnsupportedOperationException
+}
 
 

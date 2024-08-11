@@ -2,8 +2,10 @@ package com.lk.setl.sql.catalyst.expressions
 
 import com.lk.setl.sql.Row
 import com.lk.setl.sql.catalyst.analysis.TypeCheckResult
+import com.lk.setl.sql.catalyst.expressions.codegen.Block.BlockHelper
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode, FalseLiteral}
 import com.lk.setl.sql.catalyst.util.TypeUtils
-import com.lk.setl.sql.types.{AbstractDataType, AnyDataType, AtomicType, BooleanType, DataType, NullType}
+import com.lk.setl.sql.types.{AbstractDataType, AnyDataType, AtomicType, BooleanType, DataType, DoubleType, FloatType, IntegerType, NullType}
 
 import scala.collection.immutable.TreeSet
 
@@ -13,7 +15,7 @@ import scala.collection.immutable.TreeSet
 abstract class BasePredicate {
   def eval(r: Row): Boolean
 
-  final def initialize(partitionIndex: Int): Unit = {}
+  def initialize(partitionIndex: Int): Unit = {}
 }
 
 /**
@@ -33,6 +35,18 @@ abstract class BinaryComparison extends BinaryOperator with Predicate {
     case TypeCheckResult.TypeCheckSuccess =>
       TypeUtils.checkForOrderingExpr(left.dataType, this.getClass.getSimpleName)
     case failure => failure
+  }
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    if (CodeGenerator.isPrimitiveType(left.dataType)
+      && left.dataType != BooleanType // java boolean doesn't support > or < operator
+      && left.dataType != FloatType
+      && left.dataType != DoubleType) {
+      // faster version
+      defineCodeGen(ctx, ev, (c1, c2) => s"$c1 $symbol $c2")
+    } else {
+      defineCodeGen(ctx, ev, (c1, c2) => s"${ctx.genComp(left.dataType, c1, c2)} $symbol 0")
+    }
   }
 
   protected lazy val ordering: Ordering[Any] = TypeUtils.getInterpretedOrdering(left.dataType)
@@ -65,6 +79,10 @@ case class EqualTo(left: Expression, right: Expression)
   // +---------+---------+---------+---------+
   protected override def nullSafeEval(left: Any, right: Any): Any = ordering.equiv(left, right)
 
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    defineCodeGen(ctx, ev, (c1, c2) => ctx.genEqual(left.dataType, c1, c2))
+  }
+
 }
 
 case class EqualNullSafe(left: Expression, right: Expression) extends BinaryComparison {
@@ -89,6 +107,16 @@ case class EqualNullSafe(left: Expression, right: Expression) extends BinaryComp
       ordering.equiv(input1, input2)
     }
   }
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val eval1 = left.genCode(ctx)
+    val eval2 = right.genCode(ctx)
+    val equalCode = ctx.genEqual(left.dataType, eval1.value, eval2.value)
+    ev.copy(code = eval1.code + eval2.code + code"""
+        boolean ${ev.value} = (${eval1.isNull} && ${eval2.isNull}) ||
+           (!${eval1.isNull} && !${eval2.isNull} && $equalCode);""", isNull = FalseLiteral)
+  }
+
 }
 
 case class LessThan(left: Expression, right: Expression)
@@ -139,6 +167,10 @@ case class Not(child: Expression)
   // +---------+-----------+
   protected override def nullSafeEval(input: Any): Any = !input.asInstanceOf[Boolean]
 
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    defineCodeGen(ctx, ev, c => s"!($c)")
+  }
+
   override def sql: String = s"(NOT ${child.sql})"
 }
 
@@ -186,6 +218,69 @@ case class In(value: Expression, list: Seq[Expression]) extends Predicate {
     }
   }
 
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val javaDataType = CodeGenerator.javaType(value.dataType)
+    val valueGen = value.genCode(ctx)
+    val listGen = list.map(_.genCode(ctx))
+    // inTmpResult has 3 possible values:
+    // -1 means no matches found and there is at least one value in the list evaluated to null
+    val HAS_NULL = -1
+    // 0 means no matches found and all values in the list are not null
+    val NOT_MATCHED = 0
+    // 1 means one value in the list is matched
+    val MATCHED = 1
+    val tmpResult = ctx.freshName("inTmpResult")
+    val valueArg = ctx.freshName("valueArg")
+    // All the blocks are meant to be inside a do { ... } while (false); loop.
+    // The evaluation of variables can be stopped when we find a matching value.
+    val listCode = listGen.map(x =>
+      s"""
+         |${x.code}
+         |if (${x.isNull}) {
+         |  $tmpResult = $HAS_NULL; // ${ev.isNull} = true;
+         |} else if (${ctx.genEqual(value.dataType, valueArg, x.value)}) {
+         |  $tmpResult = $MATCHED; // ${ev.isNull} = false; ${ev.value} = true;
+         |  continue;
+         |}
+       """.stripMargin)
+
+    val codes = ctx.splitExpressionsWithCurrentInputs(
+      expressions = listCode,
+      funcName = "valueIn",
+      extraArguments = (javaDataType, valueArg) :: (CodeGenerator.JAVA_BYTE, tmpResult) :: Nil,
+      returnType = CodeGenerator.JAVA_BYTE,
+      makeSplitFunction = body =>
+        s"""
+           |do {
+           |  $body
+           |} while (false);
+           |return $tmpResult;
+         """.stripMargin,
+      foldFunctions = _.map { funcCall =>
+        s"""
+           |$tmpResult = $funcCall;
+           |if ($tmpResult == $MATCHED) {
+           |  continue;
+           |}
+         """.stripMargin
+      }.mkString("\n"))
+
+    ev.copy(code =
+      code"""
+            |${valueGen.code}
+            |byte $tmpResult = $HAS_NULL;
+            |if (!${valueGen.isNull}) {
+            |  $tmpResult = $NOT_MATCHED;
+            |  $javaDataType $valueArg = ${valueGen.value};
+            |  do {
+            |    $codes
+            |  } while (false);
+            |}
+            |final boolean ${ev.isNull} = ($tmpResult == $HAS_NULL);
+            |final boolean ${ev.value} = ($tmpResult == $MATCHED);
+       """.stripMargin)
+  }
+
   override def sql: String = {
     val valueSQL = value.sql
     val listSQL = list.map(_.sql).mkString(", ")
@@ -221,6 +316,70 @@ case class InSet(child: Expression, hset: Set[Any]) extends UnaryExpression with
     case _ =>
       // for structs use interpreted ordering to be able to compare UnsafeRows with non-UnsafeRows
       TreeSet.empty(TypeUtils.getInterpretedOrdering(child.dataType)) ++ (hset - null)
+  }
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    if (canBeComputedUsingSwitch && hset.size <= 400 /*SQLConf.get.optimizerInSetSwitchThreshold*/) {
+      genCodeWithSwitch(ctx, ev)
+    } else {
+      genCodeWithSet(ctx, ev)
+    }
+  }
+
+  private def canBeComputedUsingSwitch: Boolean = child.dataType match {
+    case IntegerType => true
+    case _ => false
+  }
+
+  private def genCodeWithSet(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    nullSafeCodeGen(ctx, ev, c => {
+      val setTerm = ctx.addReferenceObj("set", set)
+      val setIsNull = if (hasNull) {
+        s"${ev.isNull} = !${ev.value};"
+      } else {
+        ""
+      }
+      s"""
+         |${ev.value} = $setTerm.contains($c);
+         |$setIsNull
+       """.stripMargin
+    })
+  }
+
+  // spark.sql.optimizer.inSetSwitchThreshold has an appropriate upper limit,
+  // so the code size should not exceed 64KB
+  private def genCodeWithSwitch(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val caseValuesGen = hset.filter(_ != null).map(Literal(_).genCode(ctx))
+    val valueGen = child.genCode(ctx)
+
+    val caseBranches = caseValuesGen.map(literal =>
+      code"""
+        case ${literal.value}:
+          ${ev.value} = true;
+          break;
+       """)
+
+    val switchCode = if (caseBranches.size > 0) {
+      code"""
+        switch (${valueGen.value}) {
+          ${caseBranches.mkString("\n")}
+          default:
+            ${ev.isNull} = $hasNull;
+        }
+       """
+    } else {
+      s"${ev.isNull} = $hasNull;"
+    }
+
+    ev.copy(code =
+      code"""
+        ${valueGen.code}
+        ${CodeGenerator.JAVA_BOOLEAN} ${ev.isNull} = ${valueGen.isNull};
+        ${CodeGenerator.JAVA_BOOLEAN} ${ev.value} = false;
+        if (!${valueGen.isNull}) {
+          $switchCode
+        }
+       """)
   }
 
   override def sql: String = {
@@ -265,6 +424,39 @@ case class And(left: Expression, right: Expression) extends BinaryOperator with 
     }
   }
 
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val eval1 = left.genCode(ctx)
+    val eval2 = right.genCode(ctx)
+
+    // The result should be `false`, if any of them is `false` whenever the other is null or not.
+    if (!left.nullable && !right.nullable) {
+      ev.copy(code = code"""
+        ${eval1.code}
+        boolean ${ev.value} = false;
+
+        if (${eval1.value}) {
+          ${eval2.code}
+          ${ev.value} = ${eval2.value};
+        }""", isNull = FalseLiteral)
+    } else {
+      ev.copy(code = code"""
+        ${eval1.code}
+        boolean ${ev.isNull} = false;
+        boolean ${ev.value} = false;
+
+        if (!${eval1.isNull} && !${eval1.value}) {
+        } else {
+          ${eval2.code}
+          if (!${eval2.isNull} && !${eval2.value}) {
+          } else if (!${eval1.isNull} && !${eval2.isNull}) {
+            ${ev.value} = true;
+          } else {
+            ${ev.isNull} = true;
+          }
+        }
+      """)
+    }
+  }
 }
 
 case class Or(left: Expression, right: Expression) extends BinaryOperator with Predicate {
@@ -297,6 +489,41 @@ case class Or(left: Expression, right: Expression) extends BinaryOperator with P
           null
         }
       }
+    }
+  }
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val eval1 = left.genCode(ctx)
+    val eval2 = right.genCode(ctx)
+
+    // The result should be `true`, if any of them is `true` whenever the other is null or not.
+    if (!left.nullable && !right.nullable) {
+      ev.isNull = FalseLiteral
+      ev.copy(code = code"""
+        ${eval1.code}
+        boolean ${ev.value} = true;
+
+        if (!${eval1.value}) {
+          ${eval2.code}
+          ${ev.value} = ${eval2.value};
+        }""", isNull = FalseLiteral)
+    } else {
+      ev.copy(code = code"""
+        ${eval1.code}
+        boolean ${ev.isNull} = false;
+        boolean ${ev.value} = true;
+
+        if (!${eval1.isNull} && ${eval1.value}) {
+        } else {
+          ${eval2.code}
+          if (!${eval2.isNull} && ${eval2.value}) {
+          } else if (!${eval1.isNull} && !${eval2.isNull}) {
+            ${ev.value} = false;
+          } else {
+            ${ev.isNull} = true;
+          }
+        }
+      """)
     }
   }
 }

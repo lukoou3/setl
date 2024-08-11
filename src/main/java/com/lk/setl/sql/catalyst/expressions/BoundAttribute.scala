@@ -3,6 +3,8 @@ package com.lk.setl.sql.catalyst.expressions
 import com.lk.setl.Logging
 import com.lk.setl.sql.Row
 import com.lk.setl.sql.catalyst.analysis.attachTree
+import com.lk.setl.sql.catalyst.expressions.codegen.Block.BlockHelper
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode, JavaCode}
 import com.lk.setl.sql.types.DataType
 
 
@@ -23,6 +25,25 @@ case class BoundReference(ordinal: Int, dataType: DataType)
   // Use special getter for primitive types (for UnsafeRow)
   override def eval(input: Row): Any = {
     input.get(ordinal)
+  }
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    if (ctx.currentVars != null && ctx.currentVars(ordinal) != null) {
+      val oev = ctx.currentVars(ordinal)
+      ev.isNull = oev.isNull
+      ev.value = oev.value
+      ev.copy(code = oev.code)
+    } else {
+      assert(ctx.INPUT_ROW != null, "INPUT_ROW and currentVars cannot both be null.")
+      val javaType = JavaCode.javaType(dataType)
+      val value = CodeGenerator.getValue(ctx.INPUT_ROW, dataType, ordinal.toString)
+      ev.copy(code =
+        code"""
+              |boolean ${ev.isNull} = ${ctx.INPUT_ROW}.isNullAt($ordinal);
+              |$javaType ${ev.value} = ${ev.isNull} ?
+              |  ${CodeGenerator.defaultValue(dataType)} : ($value);
+           """.stripMargin)
+    }
   }
 
 }

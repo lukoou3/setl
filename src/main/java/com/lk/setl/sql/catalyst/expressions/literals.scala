@@ -2,6 +2,7 @@ package com.lk.setl.sql.catalyst.expressions
 
 import com.lk.setl.sql.{AnalysisException, Row}
 import com.lk.setl.sql.catalyst.CatalystTypeConverters
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode, JavaCode}
 import com.lk.setl.sql.types._
 import com.lk.setl.util.Utils
 
@@ -197,6 +198,48 @@ case class Literal (value: Any, dataType: DataType) extends LeafExpression {
 
   override def eval(input: Row): Any = value
 
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    // 返回spark sql DataType对应的java类型字符串, DateType,TimestampType底层是用int,long表示的
+    val javaType = CodeGenerator.javaType(dataType)
+    if (value == null) {
+      ExprCode.forNullValue(dataType)
+    } else {
+      def toExprCode(code: String): ExprCode = {
+        ExprCode.forNonNullValue(JavaCode.literal(code, dataType))
+      }
+      dataType match {
+        case BooleanType | IntegerType =>
+          toExprCode(value.toString)
+        case FloatType =>
+          value.asInstanceOf[Float] match {
+            case v if v.isNaN =>
+              toExprCode("Float.NaN")
+            case Float.PositiveInfinity =>
+              toExprCode("Float.POSITIVE_INFINITY")
+            case Float.NegativeInfinity =>
+              toExprCode("Float.NEGATIVE_INFINITY")
+            case _ =>
+              toExprCode(s"${value}F")
+          }
+        case DoubleType =>
+          value.asInstanceOf[Double] match {
+            case v if v.isNaN =>
+              toExprCode("Double.NaN")
+            case Double.PositiveInfinity =>
+              toExprCode("Double.POSITIVE_INFINITY")
+            case Double.NegativeInfinity =>
+              toExprCode("Double.NEGATIVE_INFINITY")
+            case _ =>
+              toExprCode(s"${value}D")
+          }
+        case LongType =>
+          toExprCode(s"${value}L")
+        case _ =>
+          val constRef = ctx.addReferenceObj("literal", value, javaType)
+          ExprCode.forNonNullValue(JavaCode.global(constRef, dataType))
+      }
+    }
+  }
 
   override def sql: String = (value, dataType) match {
     case (_, NullType | _: ArrayType | _: StructType) if value == null => "NULL"

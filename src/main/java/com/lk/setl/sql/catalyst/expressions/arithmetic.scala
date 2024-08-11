@@ -2,6 +2,7 @@ package com.lk.setl.sql.catalyst.expressions
 
 import com.lk.setl.sql.Row
 import com.lk.setl.sql.catalyst.analysis.FunctionRegistry
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode}
 import com.lk.setl.sql.catalyst.util.TypeUtils
 import com.lk.setl.sql.types._
 
@@ -30,6 +31,23 @@ case class UnaryMinus(
       case funcName => s"$funcName(${child.sql})"
     }
   }
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = dataType match {
+    case IntegerType | LongType if failOnError =>
+      nullSafeCodeGen(ctx, ev, eval => {
+        val mathClass = classOf[Math].getName
+        s"${ev.value} = $mathClass.negateExact($eval);"
+      })
+    case dt: NumericType => nullSafeCodeGen(ctx, ev, eval => {
+      val originValue = ctx.freshName("origin")
+      // codegen would fail to compile if we just write (-($c))
+      // for example, we could not write --9223372036854775808L in code
+      s"""
+        ${CodeGenerator.javaType(dt)} $originValue = (${CodeGenerator.javaType(dt)})($eval);
+        ${ev.value} = (${CodeGenerator.javaType(dt)})(-($originValue));
+      """})
+  }
+
 }
 
 
@@ -45,6 +63,10 @@ case class UnaryPositive(child: Expression)
   protected override def nullSafeEval(input: Any): Any = input
 
   override def sql: String = s"(+ ${child.sql})"
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    defineCodeGen(ctx, ev, c => c)
+
 }
 
 abstract class BinaryArithmetic extends BinaryOperator with NullIntolerant {
@@ -56,10 +78,48 @@ abstract class BinaryArithmetic extends BinaryOperator with NullIntolerant {
 
   override lazy val resolved: Boolean = childrenResolved && checkInputDataTypes().isSuccess
 
+  // 代码生成函数使用
+  /** Name of the function for this expression on a [[Decimal]] type. */
+  def decimalMethod: String =
+    sys.error("BinaryArithmetics must override either decimalMethod or genCode")
+
+  // 代码生成函数使用
+  /** Name of the function for this expression on a [[CalendarInterval]] type. */
+  def calendarIntervalMethod: String =
+    sys.error("BinaryArithmetics must override either calendarIntervalMethod or genCode")
+
   // Name of the function for the exact version of this expression in [[Math]].
   // If the option "spark.sql.ansi.enabled" is enabled and there is corresponding
   // function in [[Math]], the exact function will be called instead of evaluation with [[symbol]].
   def exactMathMethod: Option[String] = None
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    dataType match {
+      case IntegerType | LongType =>
+        if(true){
+          //throw new Exception("test")
+        }
+        nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
+          val operation = if (failOnError && exactMathMethod.isDefined) {
+            val mathClass = classOf[Math].getName
+            s"$mathClass.${exactMathMethod.get}($eval1, $eval2)"
+          } else {
+            s"$eval1 $symbol $eval2"
+          }
+          s"""
+             |${ev.value} = $operation;
+         """.stripMargin
+        })
+      case DoubleType | FloatType =>
+        // When Double/Float overflows, there can be 2 cases:
+        // - precision loss: according to SQL standard, the number is truncated;
+        // - returns (+/-)Infinite: same behavior also other DBs have (eg. Postgres)
+        nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
+          s"""
+             |${ev.value} = $eval1 $symbol $eval2;
+         """.stripMargin
+        })
+    }
 }
 
 object BinaryArithmetic {
