@@ -3,8 +3,6 @@ package com.lk.setl.sql.types
 import com.lk.setl.sql.ArrayData
 import com.lk.setl.sql.catalyst.util.StringUtils.StringConcat
 
-import scala.math.Ordering
-
 /**
  * Companion object for ArrayType.
  *

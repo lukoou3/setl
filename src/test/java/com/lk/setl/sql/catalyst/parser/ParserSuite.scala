@@ -33,6 +33,43 @@ class ParserSuite extends AnyFunSuite {
     println("rst:" + rst)
   }
 
+  test("predicateByEval") {
+    val expr = And(And(GreaterThan(BoundReference(0, IntegerType),Literal(10, IntegerType)),
+      LessThanOrEqual(BoundReference(1, IntegerType),Literal(20, IntegerType))),
+      LessThanOrEqual(BoundReference(0, IntegerType),BoundReference(1, IntegerType)))
+    val row = new GenericRow(new Array[Any](2))
+    row.update(0, 15)
+    row.update(1, 20)
+    println(expr.eval(row))
+    val startMs = System.currentTimeMillis()
+    var i = 0
+    while (i < 10000000){
+      expr.eval(row)
+      i+=1;
+    }
+    val endMs = System.currentTimeMillis()
+    println(s"time:${endMs - startMs}")
+  }
+
+  test("predicateByCode") {
+    val expr = And(And(GreaterThan(BoundReference(0, IntegerType),Literal(10, IntegerType)),
+      LessThanOrEqual(BoundReference(1, IntegerType),Literal(20, IntegerType))),
+      LessThanOrEqual(BoundReference(0, IntegerType),BoundReference(1, IntegerType)))
+    val instance = GeneratePredicate.generate(expr)
+    val row = new GenericRow(new Array[Any](2))
+    row.update(0, 15)
+    row.update(1, 20)
+    println(instance.eval(row))
+    val startMs = System.currentTimeMillis()
+    var i = 0
+    while (i < 10000000){
+      instance.eval(row)
+      i+=1;
+    }
+    val endMs = System.currentTimeMillis()
+    println(s"time:${endMs - startMs}")
+  }
+
   test("generatePredicate") {
     val expr = GreaterThan(
       BoundReference(0, IntegerType),

@@ -97,7 +97,7 @@ object GenerateOrdering extends CodeGenerator[Seq[SortOrder], BaseOrdering] with
     val code = ctx.splitExpressions(
       expressions = comparisons,
       funcName = "compare",
-      arguments = Seq(("InternalRow", "a"), ("InternalRow", "b")),
+      arguments = Seq(("Row", "a"), ("Row", "b")),
       returnType = "int",
       makeSplitFunction = { body =>
         s"""
@@ -139,7 +139,7 @@ object GenerateOrdering extends CodeGenerator[Seq[SortOrder], BaseOrdering] with
           ${ctx.initMutableStates()}
         }
 
-        public int compare(InternalRow a, InternalRow b) {
+        public int compare(Row a, Row b) {
           $comparisons
           return 0;
         }

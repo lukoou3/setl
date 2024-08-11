@@ -2,7 +2,7 @@ package com.lk.setl.sql
 
 abstract class ArrayData {
 
-  def numElements: Int = length
+  def numElements(): Int = length
 
   def size: Int = length
 
