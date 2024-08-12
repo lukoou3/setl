@@ -83,7 +83,7 @@ abstract class Expression extends TreeNode[Expression] {
       val eval = doGenCode(ctx, ExprCode(
         JavaCode.isNullVariable(isNull),
         JavaCode.variable(value, dataType)))
-      reduceCodeSize(ctx, eval)
+      reduceCodeSize(ctx, eval) // 当代码较长时提取函数
       if (eval.code.toString.nonEmpty) {
         // Add `this` in the comment.
         eval.copy(code = ctx.registerComment(this.toString) + eval.code)
@@ -364,6 +364,7 @@ abstract class UnaryExpression extends Expression {
   }
 
   /**
+   * 由一元表达式调用，生成一个代码块，如果其父级返回null，则返回null，如果不为null，则使用f生成表达式。
    * Called by unary expressions to generate a code block that returns null if its parent returns
    * null, and if not null, use `f` to generate the expression.
    *

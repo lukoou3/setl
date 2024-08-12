@@ -141,6 +141,7 @@ class CodegenContext extends Logging {
   var currentVars: Seq[ExprCode] = null
 
   /**
+   * 将表达式的内联可变状态（如单调递增ID.count）保存为2元组：java类型，变量名。
    * Holding expressions' inlined mutable states like `MonotonicallyIncreasingID.count` as a
    * 2-tuple: java type, variable name.
    * As an example, ("int", "count") will produce code:
@@ -149,6 +150,7 @@ class CodegenContext extends Logging {
    * }}}
    * as a member variable
    *
+   * 它们将作为成员变量保存在生成的类中，如SpecificProjection(保存全局变量)。
    * They will be kept as member variables in generated classes like `SpecificProjection`.
    *
    * Exposed for tests only.
