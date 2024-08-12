@@ -8,8 +8,7 @@ import com.lk.setl.sql.catalyst.expressions._
 object GeneratePredicate extends CodeGenerator[Expression, BasePredicate] {
 
   protected def canonicalize(in: Expression): Expression =
-    //ExpressionCanonicalizer.execute(in)
-    in
+    ExpressionCanonicalizer.execute(in)
 
   protected def bind(in: Expression, inputSchema: Seq[Attribute]): Expression =
     BindReferences.bindReference(in, inputSchema)

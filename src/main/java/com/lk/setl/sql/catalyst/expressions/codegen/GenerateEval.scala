@@ -11,8 +11,7 @@ abstract class BaseEval {
 
 object GenerateEval extends CodeGenerator[Expression, BaseEval] {
   protected def canonicalize(in: Expression): Expression =
-  //ExpressionCanonicalizer.execute(in)
-    in
+    ExpressionCanonicalizer.execute(in)
 
   protected def bind(in: Expression, inputSchema: Seq[Attribute]): Expression =
     BindReferences.bindReference(in, inputSchema)
