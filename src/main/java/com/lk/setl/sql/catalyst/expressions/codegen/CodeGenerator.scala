@@ -915,6 +915,7 @@ class CodegenContext extends Logging {
       }
       blockBuilder.append(code)
       length += CodeFormatter.stripExtraNewLinesAndComments(code).length
+      // length += code.length
     }
     blocks += blockBuilder.toString()
     blocks.toSeq

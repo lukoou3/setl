@@ -3,7 +3,7 @@ package com.lk.setl.sql.catalyst.parser
 import com.lk.setl.sql.{GenericRow, Row}
 import com.lk.setl.sql.catalyst.expressions._
 import com.lk.setl.sql.catalyst.analysis.UnresolvedAttribute
-import com.lk.setl.sql.catalyst.expressions.codegen.{GeneratePredicate, GenerateSafeProjection}
+import com.lk.setl.sql.catalyst.expressions.codegen.{GenerateEval, GeneratePredicate, GenerateSafeProjection}
 import com.lk.setl.sql.types.{IntegerType, LongType}
 import org.scalatest.funsuite.AnyFunSuite
 
@@ -117,6 +117,27 @@ class ParserSuite extends AnyFunSuite {
     val instance3 = GenerateSafeProjection.generate(expressions2)
     val rst4 = instance3.apply(row)
     println(rst4)
+  }
+
+  test("generateSafeEval") {
+    val expression = Add(
+      Add(BoundReference(0, IntegerType), Literal(100, IntegerType)),
+      Add(BoundReference(1, IntegerType), Literal(200, IntegerType))
+    )
+    val instance = GenerateEval.generate(expression)
+    val row = new GenericRow(new Array[Any](2))
+    row.update(0, 1)
+    row.update(1, 5)
+    val rst1 = instance.eval(row)
+    println(rst1)
+    row.update(0, 10)
+    row.update(1, 11)
+    val rst2 = instance.eval(row)
+    println(rst2)
+    row.update(0, 10)
+    row.update(1, null)
+    val rst3 = instance.eval(row)
+    println(rst3)
   }
 
 }

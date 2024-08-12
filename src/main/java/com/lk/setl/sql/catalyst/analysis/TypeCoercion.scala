@@ -1,8 +1,17 @@
 package com.lk.setl.sql.catalyst.analysis
 
-import com.lk.setl.sql.types.DataType
+import com.lk.setl.sql.types._
 
 object TypeCoercion {
+
+  // See https://cwiki.apache.org/confluence/display/Hive/LanguageManual+Types.
+  // The conversion for integral and floating point types have a linear widening hierarchy:
+  val numericPrecedence =
+  IndexedSeq(
+    IntegerType,
+    LongType,
+    FloatType,
+    DoubleType)
 
   /**
    * The method finds a common type for data types that differ only in nullable flags, including

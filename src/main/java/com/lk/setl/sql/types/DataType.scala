@@ -73,7 +73,29 @@ object DataType {
   private val CHAR_TYPE = """char\(\s*(\d+)\s*\)""".r
   private val VARCHAR_TYPE = """varchar\(\s*(\d+)\s*\)""".r
 
+  /**
+   * Returns true if the two data types share the same "shape", i.e. the types
+   * are the same, but the field names don't need to be the same.
+   *
+   * @param ignoreNullability whether to ignore nullability when comparing the types
+   */
+  def equalsStructurally(
+    from: DataType,
+    to: DataType): Boolean = {
+    (from, to) match {
+      case (left: ArrayType, right: ArrayType) =>
+        equalsStructurally(left.elementType, right.elementType) && left.containsNull == right.containsNull
 
+      case (StructType(fromFields), StructType(toFields)) =>
+        fromFields.length == toFields.length &&
+          fromFields.zip(toFields)
+            .forall { case (l, r) =>
+              equalsStructurally(l.dataType, r.dataType)
+            }
+
+      case (fromDataType, toDataType) => fromDataType == toDataType
+    }
+  }
 
   private val SparkGeneratedName = """col\d+""".r
   private def isSparkGeneratedName(name: String): Boolean = name match {
