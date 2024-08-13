@@ -95,7 +95,6 @@ object GenerateSafeProjection extends CodeGenerator[Seq[Expression], Projection]
     ExprCode(code, FalseLiteral, JavaCode.variable(output, classOf[ArrayData]))
   }
 
-
   private def convertToSafe(
       ctx: CodegenContext,
       input: ExprValue,
@@ -105,12 +104,25 @@ object GenerateSafeProjection extends CodeGenerator[Seq[Expression], Projection]
     case _ => ExprCode(FalseLiteral, input)
   }
 
-  protected def create(expressions: Seq[Expression]): Projection = {
+  def generate(
+      expressions: Seq[Expression],
+      subexpressionEliminationEnabled: Boolean): Projection = {
+    create(canonicalize(expressions), subexpressionEliminationEnabled)
+  }
+
+  protected def create(references: Seq[Expression]): Projection = {
+    create(references, false)
+  }
+
+  protected def create(expressions: Seq[Expression], useSubexprElimination: Boolean): Projection = {
     val ctx = newCodeGenContext()
+    // 为啥spark这里没有使用useSubexprElimination
+    val exprEvals = ctx.generateExpressions(expressions, useSubexprElimination)
     val expressionCodes = expressions.zipWithIndex.map {
       // case (NoOp, _) => ""
       case (e, i) =>
-        val evaluationCode = e.genCode(ctx)
+        //val evaluationCode = e.genCode(ctx)
+        val evaluationCode = exprEvals(i)
         val converter = convertToSafe(ctx, evaluationCode.value, e.dataType)
         evaluationCode.code +
           s"""
@@ -122,6 +134,7 @@ object GenerateSafeProjection extends CodeGenerator[Seq[Expression], Projection]
             }
           """
     }
+    val evalSubexpr = ctx.subexprFunctionsCode
     val allExpressions = ctx.splitExpressionsWithCurrentInputs(expressionCodes)
 
     val codeBody = s"""
@@ -146,6 +159,7 @@ object GenerateSafeProjection extends CodeGenerator[Seq[Expression], Projection]
         }
 
         public Row apply(Row ${ctx.INPUT_ROW}) {
+          $evalSubexpr
           $allExpressions
           return mutableRow;
         }
