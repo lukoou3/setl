@@ -16,9 +16,16 @@ object GenerateEval extends CodeGenerator[Expression, BaseEval] {
   protected def bind(in: Expression, inputSchema: Seq[Attribute]): Expression =
     BindReferences.bindReference(in, inputSchema)
 
-  override protected def create(e: Expression): BaseEval = {
+  def generate(expression: Expression, useSubexprElimination: Boolean): BaseEval =
+    create(canonicalize(expression), useSubexprElimination)
+
+  protected def create(predicate: Expression): BaseEval = create(predicate, false)
+
+  protected def create(e: Expression, useSubexprElimination: Boolean): BaseEval = {
     val ctx = newCodeGenContext()
-    val eval = e.genCode(ctx)
+    // Do sub-expression elimination for predicates.
+    val eval = ctx.generateExpressions(Seq(e), useSubexprElimination).head
+    val evalSubexpr = ctx.subexprFunctionsCode
 
     val codeBody = s"""
       public SpecificEval generate(Object[] references) {
@@ -39,6 +46,7 @@ object GenerateEval extends CodeGenerator[Expression, BaseEval] {
         }
 
         public Object eval(Row ${ctx.INPUT_ROW}) {
+          $evalSubexpr
           ${eval.code}
           return ${eval.isNull}? null : ${eval.value};
         }

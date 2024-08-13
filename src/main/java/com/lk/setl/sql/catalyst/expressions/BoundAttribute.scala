@@ -17,7 +17,6 @@ import com.lk.setl.sql.types.DataType
  */
 case class BoundReference(ordinal: Int, dataType: DataType)
   extends LeafExpression {
-  var test = 1
 
   override def toString: String = s"input[$ordinal, ${dataType.simpleString}]"
 
@@ -40,8 +39,7 @@ case class BoundReference(ordinal: Int, dataType: DataType)
       ev.copy(code =
         code"""
               |boolean ${ev.isNull} = ${ctx.INPUT_ROW}.isNullAt($ordinal);
-              |$javaType ${ev.value} = ${ev.isNull} ?
-              |  ${CodeGenerator.defaultValue(dataType)} : ($value);
+              |$javaType ${ev.value} = ${ev.isNull} ? ${CodeGenerator.defaultValue(dataType)} : ($value);
            """.stripMargin)
     }
   }
