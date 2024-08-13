@@ -143,7 +143,8 @@ case class Alias(child: Expression, name: String)(
  */
 case class AttributeReference(
   name: String,
-  dataType: DataType)(
+  dataType: DataType,
+  override val nullable: Boolean = true)(
   val exprId: Long = NamedExpression.newExprId,
   val qualifier: Seq[String] = Seq.empty[String])
   extends Attribute with Unevaluable {
