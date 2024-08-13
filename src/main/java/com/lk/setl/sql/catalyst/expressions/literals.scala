@@ -169,6 +169,9 @@ case class Literal (value: Any, dataType: DataType) extends LeafExpression {
 
   override def foldable: Boolean = true
 
+  // 这个还是有必要重写的，代码生成能减少if判断分支
+  override def nullable: Boolean = value == null
+
   override def toString: String = value match {
     case null => "null"
     case other => other.toString

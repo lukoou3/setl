@@ -321,6 +321,8 @@ abstract class UnaryExpression extends Expression {
 
   override def foldable: Boolean = child.foldable
 
+  override def nullable: Boolean = child.nullable
+
   /**
    * Default behavior of evaluation according to the default nullability of UnaryExpression.
    * If subclass of UnaryExpression override nullable, probably should also override this.
@@ -378,14 +380,21 @@ abstract class UnaryExpression extends Expression {
     val childGen = child.genCode(ctx)
     val resultCode = f(childGen.value)
 
-    val nullSafeEval = ctx.nullSafeExec(true, childGen.isNull)(resultCode)
-    // 构建自己的插值字符串, implicit class BlockHelper(val sc: StringContext) extends AnyVal
-    ev.copy(code = code"""
-      ${childGen.code}
-      boolean ${ev.isNull} = ${childGen.isNull};
-      ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
-      $nullSafeEval
-    """)
+    if (nullable) {
+      val nullSafeEval = ctx.nullSafeExec(child.nullable, childGen.isNull)(resultCode)
+      // 构建自己的插值字符串, implicit class BlockHelper(val sc: StringContext) extends AnyVal
+      ev.copy(code = code"""
+        ${childGen.code}
+        boolean ${ev.isNull} = ${childGen.isNull};
+        ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+        $nullSafeEval
+      """)
+    } else {
+      ev.copy(code = code"""
+        ${childGen.code}
+        ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+        $resultCode""", isNull = FalseLiteral)
+    }
   }
 }
 
@@ -402,6 +411,8 @@ abstract class BinaryExpression extends Expression {
   override final def children: Seq[Expression] = Seq(left, right)
 
   override def foldable: Boolean = left.foldable && right.foldable
+
+  override def nullable: Boolean = left.nullable || right.nullable
 
   /**
    * Default behavior of evaluation according to the default nullability of BinaryExpression.
@@ -461,21 +472,29 @@ abstract class BinaryExpression extends Expression {
     val rightGen = right.genCode(ctx)
     val resultCode = f(leftGen.value, rightGen.value)
 
-    val nullSafeEval =
-      leftGen.code + ctx.nullSafeExec(true, leftGen.isNull) {
-        rightGen.code + ctx.nullSafeExec(true, rightGen.isNull) {
-          s"""
+    if (nullable) {
+      val nullSafeEval =
+        leftGen.code + ctx.nullSafeExec(left.nullable, leftGen.isNull) {
+          rightGen.code + ctx.nullSafeExec(right.nullable, rightGen.isNull) {
+            s"""
               ${ev.isNull} = false; // resultCode could change nullability.
               $resultCode
             """
-        }
+          }
       }
 
-    ev.copy(code = code"""
-      boolean ${ev.isNull} = true;
-      ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
-      $nullSafeEval
-    """)
+      ev.copy(code = code"""
+        boolean ${ev.isNull} = true;
+        ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+        $nullSafeEval
+      """)
+    } else {
+      ev.copy(code = code"""
+        ${leftGen.code}
+        ${rightGen.code}
+        ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+        $resultCode""", isNull = FalseLiteral)
+    }
   }
 }
 
@@ -531,6 +550,8 @@ object BinaryOperator {
 abstract class TernaryExpression extends Expression {
 
   override def foldable: Boolean = children.forall(_.foldable)
+
+  override def nullable: Boolean = children.exists(_.nullable)
 
   /**
    * Default behavior of evaluation according to the default nullability of TernaryExpression.

@@ -71,8 +71,7 @@ case class Like(left: Expression, right: Expression, escapeChar: Char)
     if (right.foldable) {
       val rVal = right.eval()
       if (rVal != null) {
-        val regexStr =
-          StringEscapeUtils.escapeJava(escape(rVal.toString()))
+        val regexStr = StringEscapeUtils.escapeJava(escape(rVal.toString()))
         val pattern = ctx.addMutableState(patternClass, "patternLike",
           v => s"""$v = $patternClass.compile("$regexStr");""")
 
@@ -83,7 +82,7 @@ case class Like(left: Expression, right: Expression, escapeChar: Char)
           boolean ${ev.isNull} = ${eval.isNull};
           ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
           if (!${ev.isNull}) {
-            ${ev.value} = $pattern.matcher(${eval.value}.toString()).matches();
+            ${ev.value} = $pattern.matcher(${eval.value}).matches();
           }
         """)
       } else {
@@ -100,10 +99,10 @@ case class Like(left: Expression, right: Expression, escapeChar: Char)
       val escapedEscapeChar = StringEscapeUtils.escapeJava(escapeChar.toString)
       nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
         s"""
-          String $rightStr = $eval2.toString();
+          String $rightStr = $eval2;
           $patternClass $pattern = $patternClass.compile(
             $escapeFunc($rightStr, '$escapedEscapeChar'));
-          ${ev.value} = $pattern.matcher($eval1.toString()).matches();
+          ${ev.value} = $pattern.matcher($eval1).matches();
         """
       })
     }
