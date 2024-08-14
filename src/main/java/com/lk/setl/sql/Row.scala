@@ -2,7 +2,7 @@ package com.lk.setl.sql
 
 import com.lk.setl.sql.types.StructType
 
-trait Row extends Serializable {
+abstract class Row extends Serializable {
   def numFields: Int = length
 
   /** Number of elements in the Row. */
@@ -25,6 +25,8 @@ trait Row extends Serializable {
   def setNullAt(i: Int): Unit
 
   def update(i: Int, value: Any): Unit
+
+  def copy(): Row
 
   override def toString: String = this.mkString("[", ",", "]")
 
@@ -53,5 +55,29 @@ trait Row extends Serializable {
     }
     builder.append(end)
     builder.toString()
+  }
+}
+
+object Row {
+  /**
+   * This method can be used to construct a [[Row]] with the given values.
+   */
+  def apply(values: Any*): Row = new GenericRow(values.toArray)
+
+  /**
+   * This method can be used to construct a [[Row]] from a [[Seq]] of values.
+   */
+  def fromSeq(values: Seq[Any]): Row = new GenericRow(values.toArray)
+
+  /** Returns an empty [[Row]]. */
+  val empty = apply()
+
+  /**
+   * Copies the given value if it'sstruct/array/map type.
+   */
+  def copyValue(value: Any): Any = value match {
+    case v: Row => v.copy()
+    case v: ArrayData => v.copy()
+    case _ => value
   }
 }
