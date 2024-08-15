@@ -2,17 +2,24 @@ package com.lk.setl.sql.catalyst.expressions.aggregate
 
 import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.Row
-import com.lk.setl.sql.catalyst.expressions.{AttributeReference, Literal}
+import com.lk.setl.sql.catalyst.expressions.{AttributeReference, CodegenObjectFactoryMode, Literal, SafeProjection}
 import com.lk.setl.sql.types.IntegerType
+import org.scalatest.BeforeAndAfterAll
 import org.scalatest.funsuite.AnyFunSuite
 
 /**
  * 这个不就是聚合函数的测试吗
  */
-class FirstLastTestSuite extends AnyFunSuite {
+class FirstLastTestSuite extends AnyFunSuite with BeforeAndAfterAll {
   val input = AttributeReference("input", IntegerType, nullable = true)()
   val evaluator = DeclarativeAggregateEvaluator(Last(input, false), Seq(input))
   val evaluatorIgnoreNulls = DeclarativeAggregateEvaluator(Last(input, true), Seq(input))
+
+  override protected def beforeAll(): Unit = {
+    System.setProperty("spark.testing", "true")
+    //SafeProjection.fallbackMode = CodegenObjectFactoryMode.CODEGEN_ONLY
+    SafeProjection.fallbackMode = CodegenObjectFactoryMode.NO_CODEGEN
+  }
 
   test("empty buffer") {
     println(evaluator.initialize())
@@ -109,4 +116,5 @@ class FirstLastTestSuite extends AnyFunSuite {
     }.getMessage
     assert(msg2.contains("The second argument in last should be a boolean literal"))
   }
+
 }

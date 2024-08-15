@@ -18,8 +18,9 @@ object CodegenObjectFactoryMode extends Enumeration {
  * `SQLConf.CODEGEN_FACTORY_MODE` to control fallback behavior.
  */
 abstract class CodeGeneratorWithInterpretedFallback[IN, OUT] extends Logging {
+  var fallbackMode = CodegenObjectFactoryMode.FALLBACK
 
-  def createObject(in: IN): OUT = createObject(in, CodegenObjectFactoryMode.FALLBACK)
+  def createObject(in: IN): OUT = createObject(in, fallbackMode)
 
   def createObject(in: IN, fallbackMode: CodegenObjectFactoryMode.Value): OUT = {
     // We are allowed to choose codegen-only or no-codegen modes if under tests.

@@ -90,6 +90,7 @@ object Literal {
       case _ if v == null => true
       case BooleanType => v.isInstanceOf[Boolean]
       case IntegerType => v.isInstanceOf[Int]
+      case LongType => v.isInstanceOf[Long]
       case FloatType => v.isInstanceOf[Float]
       case DoubleType => v.isInstanceOf[Double]
       case StringType => v.isInstanceOf[String]

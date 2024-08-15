@@ -1370,11 +1370,11 @@ object CodeGenerator extends Logging {
     )
     evaluator.setExtendedClass(classOf[GeneratedClass])
 
-    logDebug({
+    /*logDebug({
       // Only add extra debugging info to byte code when we are going to print the source code.
       evaluator.setDebuggingInformation(true, true, false)
       s"\n${CodeFormatter.format(code)}"
-    })
+    })*/
 
     val codeStats = try {
       evaluator.cook("generated.java", code.body)
@@ -1470,7 +1470,7 @@ object CodeGenerator extends Logging {
    */
   private val cache = CacheBuilder.newBuilder()
     //.maximumSize(SQLConf.get.codegenCacheMaxEntries)
-    .maximumSize(100)
+    .maximumSize(100) // 相同的代码会缓存, 改为0后相同的代码会生成两个类，类名一样但是实际不是一个类
     .build(
       new CacheLoader[CodeAndComment, (GeneratedClass, ByteCodeStats)]() {
         override def load(code: CodeAndComment): (GeneratedClass, ByteCodeStats) = {
