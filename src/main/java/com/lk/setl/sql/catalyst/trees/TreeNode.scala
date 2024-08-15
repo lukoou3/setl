@@ -1,6 +1,6 @@
 package com.lk.setl.sql.catalyst.trees
 
-import com.lk.setl.sql.catalyst.analysis.{TreeNodeException, attachTree}
+import com.lk.setl.sql.catalyst.errors.{TreeNodeException, attachTree}
 import com.lk.setl.sql.catalyst.util.StringUtils.PlanStringConcat
 import com.lk.setl.sql.catalyst.util.truncatedString
 import com.lk.setl.sql.types.{DataType, StructType}

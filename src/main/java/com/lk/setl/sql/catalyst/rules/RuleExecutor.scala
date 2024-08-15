@@ -2,7 +2,7 @@ package com.lk.setl.sql.catalyst.rules
 
 import com.lk.setl.Logging
 import com.lk.setl.sql.catalyst.QueryPlanningTracker
-import com.lk.setl.sql.catalyst.analysis.TreeNodeException
+import com.lk.setl.sql.catalyst.errors.TreeNodeException
 import com.lk.setl.sql.catalyst.trees.TreeNode
 import com.lk.setl.sql.catalyst.util.sideBySide
 import com.lk.setl.util.Utils

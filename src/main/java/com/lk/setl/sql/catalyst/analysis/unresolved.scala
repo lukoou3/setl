@@ -1,6 +1,7 @@
 package com.lk.setl.sql.catalyst.analysis
 
 import com.lk.setl.sql.AnalysisException
+import com.lk.setl.sql.catalyst.errors.TreeNodeException
 import com.lk.setl.sql.catalyst.expressions.{Alias, Attribute, BinaryExpression, Expression, GetStructField, LeafExpression, NamedExpression, UnaryExpression, Unevaluable}
 import com.lk.setl.sql.catalyst.parser.ParserUtils
 import com.lk.setl.sql.catalyst.plans.logical.LeafNode

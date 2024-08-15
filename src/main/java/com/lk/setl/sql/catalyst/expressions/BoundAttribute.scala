@@ -2,7 +2,7 @@ package com.lk.setl.sql.catalyst.expressions
 
 import com.lk.setl.Logging
 import com.lk.setl.sql.Row
-import com.lk.setl.sql.catalyst.analysis.attachTree
+import com.lk.setl.sql.catalyst.errors.attachTree
 import com.lk.setl.sql.catalyst.expressions.codegen.Block.BlockHelper
 import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode, FalseLiteral, JavaCode}
 import com.lk.setl.sql.types.DataType
