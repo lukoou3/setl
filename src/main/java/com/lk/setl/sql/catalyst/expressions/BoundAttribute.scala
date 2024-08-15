@@ -4,7 +4,7 @@ import com.lk.setl.Logging
 import com.lk.setl.sql.Row
 import com.lk.setl.sql.catalyst.analysis.attachTree
 import com.lk.setl.sql.catalyst.expressions.codegen.Block.BlockHelper
-import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode, JavaCode}
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode, FalseLiteral, JavaCode}
 import com.lk.setl.sql.types.DataType
 
 
@@ -15,11 +15,10 @@ import com.lk.setl.sql.types.DataType
  * to be retrieved more efficiently.  However, since operations like column pruning can change
  * the layout of intermediate tuples, BindReferences should be run after all such transformations.
  */
-case class BoundReference(ordinal: Int, dataType: DataType)
+case class BoundReference(ordinal: Int, dataType: DataType, override val nullable: Boolean = true)
   extends LeafExpression {
 
   override def toString: String = s"input[$ordinal, ${dataType.simpleString}]"
-
 
   // Use special getter for primitive types (for UnsafeRow)
   override def eval(input: Row): Any = {
@@ -36,11 +35,16 @@ case class BoundReference(ordinal: Int, dataType: DataType)
       assert(ctx.INPUT_ROW != null, "INPUT_ROW and currentVars cannot both be null.")
       val javaType = JavaCode.javaType(dataType)
       val value = CodeGenerator.getValue(ctx.INPUT_ROW, dataType, ordinal.toString)
-      ev.copy(code =
-        code"""
-              |boolean ${ev.isNull} = ${ctx.INPUT_ROW}.isNullAt($ordinal);
-              |$javaType ${ev.value} = ${ev.isNull} ? ${CodeGenerator.defaultValue(dataType)} : ($value);
+      if (nullable) {
+        ev.copy(code =
+          code"""
+             |boolean ${ev.isNull} = ${ctx.INPUT_ROW}.isNullAt($ordinal);
+             |$javaType ${ev.value} = ${ev.isNull} ?
+             |  ${CodeGenerator.defaultValue(dataType)} : ($value);
            """.stripMargin)
+      } else {
+        ev.copy(code = code"$javaType ${ev.value} = $value;", isNull = FalseLiteral)
+      }
     }
   }
 

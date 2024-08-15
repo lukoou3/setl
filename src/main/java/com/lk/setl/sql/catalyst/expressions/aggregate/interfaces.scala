@@ -2,8 +2,18 @@ package com.lk.setl.sql.catalyst.expressions.aggregate
 
 import com.lk.setl.sql.Row
 import com.lk.setl.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
-import com.lk.setl.sql.catalyst.expressions.{AttributeReference, Expression, Literal}
-import com.lk.setl.sql.types.StructType
+import com.lk.setl.sql.catalyst.expressions.{AttributeReference, Expression, Literal, Unevaluable}
+import com.lk.setl.sql.types._
+
+/**
+ * A place holder expressions used in code-gen, it does not change the corresponding value
+ * in the row.
+ */
+case object NoOp extends Expression with Unevaluable {
+  override def nullable: Boolean = true
+  override def dataType: DataType = NullType
+  override def children: Seq[Expression] = Nil
+}
 
 /**
  * AggregateFunction is the superclass of two aggregation function interfaces:
