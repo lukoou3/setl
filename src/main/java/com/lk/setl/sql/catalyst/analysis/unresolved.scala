@@ -3,6 +3,7 @@ package com.lk.setl.sql.catalyst.analysis
 import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.catalyst.expressions.{Alias, Attribute, BinaryExpression, Expression, GetStructField, LeafExpression, NamedExpression, UnaryExpression, Unevaluable}
 import com.lk.setl.sql.catalyst.parser.ParserUtils
+import com.lk.setl.sql.catalyst.plans.logical.LeafNode
 import com.lk.setl.sql.catalyst.trees.TreeNode
 import com.lk.setl.sql.catalyst.util.quoteIdentifier
 import com.lk.setl.sql.types.{DataType, StructType}
@@ -15,7 +16,33 @@ import com.lk.setl.sql.types.{DataType, StructType}
 class UnresolvedException[TreeType <: TreeNode[_]](tree: TreeType, function: String)
   extends TreeNodeException(tree, s"Invalid call to $function on unresolved object", null)
 
+/**
+ * Holds the name of a relation that has yet to be looked up in a catalog.
+ *
+ * @param multipartIdentifier table name
+ * @param options options to scan this relation. Only applicable to v2 table scan.
+ */
+case class UnresolvedRelation(
+    multipartIdentifier: Seq[String])
+  extends LeafNode with NamedRelation {
 
+  /** Returns a `.` separated name for this relation. */
+  def tableName: String = multipartIdentifier.map(quoteIfNeeded).mkString(".")
+
+  override def name: String = tableName
+
+  override def output: Seq[Attribute] = Nil
+
+  override lazy val resolved = false
+
+  def quoteIfNeeded(part: String): String = {
+    if (part.contains(".") || part.contains("`")) {
+      s"`${part.replace("`", "``")}`"
+    } else {
+      part
+    }
+  }
+}
 
 case class UnresolvedFunction(
   name: String,

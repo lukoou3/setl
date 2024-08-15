@@ -139,9 +139,9 @@ package object dsl {
     def upper(e: Expression): Expression = Upper(e)
     def lower(e: Expression): Expression = Lower(e)
     def coalesce(args: Expression*): Expression = Coalesce(args)
-    /*def greatest(args: Expression*): Expression = Greatest(args)
+    def greatest(args: Expression*): Expression = Greatest(args)
     def least(args: Expression*): Expression = Least(args)
-    def sqrt(e: Expression): Expression = Sqrt(e)
+    /*def sqrt(e: Expression): Expression = Sqrt(e)
     def abs(e: Expression): Expression = Abs(e)*/
     def star(names: String*): Expression = names match {
       case Seq() => UnresolvedStar(None)

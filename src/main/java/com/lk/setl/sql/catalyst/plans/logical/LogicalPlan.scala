@@ -14,7 +14,7 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with AnalysisHelper wi
    * Returns true if this expression and all its children have been resolved to a specific schema
    * and false if it still contains any unresolved placeholders. Implementations of LogicalPlan
    * can override this (e.g.
-   * [[org.apache.spark.sql.catalyst.analysis.UnresolvedRelation UnresolvedRelation]]
+   * [[com.lk.setl.sql.catalyst.analysis.UnresolvedRelation UnresolvedRelation]]
    * should return `false`).
    */
   lazy val resolved: Boolean = expressions.forall(_.resolved) && childrenResolved
@@ -91,5 +91,14 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with AnalysisHelper wi
       case (a1, a2) => a1.semanticEquals(a2)
     }
   }
+
+}
+
+/**
+ * A logical plan node with no children.
+ */
+abstract class LeafNode extends LogicalPlan {
+  override final def children: Seq[LogicalPlan] = Nil
+  override def producedAttributes: AttributeSet = outputSet
 
 }

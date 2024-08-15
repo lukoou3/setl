@@ -1,8 +1,7 @@
 package com.lk.setl.sql.catalyst
 
+import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.catalyst.trees.TreeNode
-
-import scala.util.control.NonFatal
 
 package object analysis {
 
@@ -12,33 +11,27 @@ package object analysis {
    */
   type Resolver = (String, String) => Boolean
 
-  class TreeNodeException[TreeType <: TreeNode[_]](
-    @transient val tree: TreeType,
-    msg: String,
-    cause: Throwable)
-    extends Exception(msg, cause) {
+  val caseInsensitiveResolution = (a: String, b: String) => a.equalsIgnoreCase(b)
+  val caseSensitiveResolution = (a: String, b: String) => a == b
 
-    val treeString = tree.toString
+  implicit class AnalysisErrorAt(t: TreeNode[_]) {
+    /** Fails the analysis at the point where a specific tree node was parsed. */
+    def failAnalysis(msg: String): Nothing = {
+      throw new AnalysisException(msg, t.origin.line, t.origin.startPosition)
+    }
 
-    // Yes, this is the same as a default parameter, but... those don't seem to work with SBT
-    // external project dependencies for some reason.
-    def this(tree: TreeType, msg: String) = this(tree, msg, null)
-
-    override def getMessage: String = {
-      s"${super.getMessage}, tree:${if (treeString contains "\n") "\n" else " "}$tree"
+    /** Fails the analysis at the point where a specific tree node was parsed. */
+    def failAnalysis(msg: String, cause: Throwable): Nothing = {
+      throw new AnalysisException(msg, t.origin.line, t.origin.startPosition, cause = Some(cause))
     }
   }
 
-  /**
-   *  Wraps any exceptions that are thrown while executing `f` in a
-   *  [[TreeNodeException]], attaching the provided `tree`.
-   */
-  def attachTree[TreeType <: TreeNode[_], A](tree: TreeType, msg: String = "")(f: => A): A = {
+  /** Catches any AnalysisExceptions thrown by `f` and attaches `t`'s position if any. */
+  def withPosition[A](t: TreeNode[_])(f: => A): A = {
     try f catch {
-      // SPARK-16748: We do not want SparkExceptions from job failures in the planning phase
-      // to create TreeNodeException. Hence, wrap exception only if it is not SparkException.
-      case NonFatal(e)  =>
-        throw new TreeNodeException(tree, msg, e)
+      case a: AnalysisException =>
+        throw a.withPosition(t.origin.line, t.origin.startPosition)
     }
   }
+
 }
