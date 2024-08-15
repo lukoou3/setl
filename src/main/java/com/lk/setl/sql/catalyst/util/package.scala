@@ -1,6 +1,8 @@
 package com.lk.setl.sql.catalyst
 
 import com.lk.setl.Logging
+import com.lk.setl.sql.catalyst.expressions._
+import com.lk.setl.sql.types.{NumericType, StringType}
 
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -27,6 +29,38 @@ package object util extends Logging{
     leftPadded.zip(rightPadded).map {
       case (l, r) => (if (l == r) " " else "!") + l + (" " * ((maxLeftSize - l.length) + 3)) + r
     }
+  }
+
+  // Replaces attributes, string literals, complex type extractors with their pretty form so that
+  // generated column names don't contain back-ticks or double-quotes.
+  def usePrettyExpression(e: Expression): Expression = e transform {
+    case a: Attribute => new PrettyAttribute(a)
+    case Literal(s: String, StringType) => PrettyAttribute(s.toString, StringType)
+    case Literal(v, t: NumericType) if v != null => PrettyAttribute(v.toString, t)
+    case e: GetStructField =>
+      val name = e.name.getOrElse(e.childSchema(e.ordinal).name)
+      PrettyAttribute(usePrettyExpression(e.child).sql + "." + name, e.dataType)
+    case r: RuntimeReplaceable =>
+      PrettyAttribute(r.mkString(r.exprsReplaced.map(toPrettySQL)), r.dataType)
+  }
+
+  def quoteIdentifier(name: String): String = {
+    // Escapes back-ticks within the identifier name with double-back-ticks, and then quote the
+    // identifier with back-ticks.
+    "`" + name.replace("`", "``") + "`"
+  }
+
+  def toPrettySQL(e: Expression): String = usePrettyExpression(e).sql
+
+  def escapeSingleQuotedString(str: String): String = {
+    val builder = StringBuilder.newBuilder
+
+    str.foreach {
+      case '\'' => builder ++= s"\\\'"
+      case ch => builder += ch
+    }
+
+    builder.toString()
   }
 
   /**

@@ -7,7 +7,7 @@ import com.lk.setl.sql.catalyst.expressions._
 import com.lk.setl.sql.catalyst.plans.QueryPlan
 import com.lk.setl.sql.types.StructType
 
-abstract class LogicalPlan extends QueryPlan[LogicalPlan] with AnalysisHelper with Logging {
+abstract class LogicalPlan extends QueryPlan[LogicalPlan] with AnalysisHelper with QueryPlanConstraints with Logging {
 
 
   /**
@@ -79,6 +79,11 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with AnalysisHelper wi
   }
 
   /**
+   * Returns the output ordering that this plan generates.
+   */
+  def outputOrdering: Seq[SortOrder] = Nil
+
+  /**
    * Returns true iff `other`'s output is semantically the same, ie.:
    *  - it contains the same number of `Attribute`s;
    *  - references are the same;
@@ -101,4 +106,51 @@ abstract class LeafNode extends LogicalPlan {
   override final def children: Seq[LogicalPlan] = Nil
   override def producedAttributes: AttributeSet = outputSet
 
+}
+
+/**
+ * A logical plan node with single child.
+ */
+abstract class UnaryNode extends LogicalPlan {
+  def child: LogicalPlan
+
+  override final def children: Seq[LogicalPlan] = child :: Nil
+
+  /**
+   * Generates all valid constraints including an set of aliased constraints by replacing the
+   * original constraint expressions with the corresponding alias
+   */
+  protected def getAllValidConstraints(projectList: Seq[NamedExpression]): ExpressionSet = {
+    var allConstraints = child.constraints
+    projectList.foreach {
+      case a @ Alias(l: Literal, _) =>
+        allConstraints += EqualNullSafe(a.toAttribute, l)
+      case a @ Alias(e, _) =>
+        // For every alias in `projectList`, replace the reference in constraints by its attribute.
+        allConstraints ++= allConstraints.map(_ transform {
+          case expr: Expression if expr.semanticEquals(e) =>
+            a.toAttribute
+        })
+        allConstraints += EqualNullSafe(e, a.toAttribute)
+      case _ => // Don't change.
+    }
+
+    allConstraints
+  }
+
+  override protected lazy val validConstraints: ExpressionSet = child.constraints
+}
+
+/**
+ * A logical plan node with a left and right child.
+ */
+abstract class BinaryNode extends LogicalPlan {
+  def left: LogicalPlan
+  def right: LogicalPlan
+
+  override final def children: Seq[LogicalPlan] = Seq(left, right)
+}
+
+abstract class OrderPreservingUnaryNode extends UnaryNode {
+  override final def outputOrdering: Seq[SortOrder] = child.outputOrdering
 }

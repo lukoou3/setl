@@ -2,8 +2,9 @@ package com.lk.setl.sql.catalyst.analysis
 
 import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.catalyst.expressions._
-import com.lk.setl.sql.catalyst.plans.logical.LogicalPlan
+import com.lk.setl.sql.catalyst.plans.logical.{LogicalPlan, Project}
 import com.lk.setl.sql.catalyst.rules.{Rule, RuleExecutor}
+import com.lk.setl.sql.catalyst.util.toPrettySQL
 
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -26,7 +27,11 @@ class Analyzer extends RuleExecutor[LogicalPlan]{
       maxIterationsSetting = "sql.analyzer.maxIterations")
 
   override protected def batches: Seq[Batch] = Seq(
-
+    Batch("Resolution", fixedPoint,
+        ResolveReferences,
+        ResolveFunctions,
+        ResolveAliases
+    )
   )
 
   /**
@@ -150,6 +155,36 @@ class Analyzer extends RuleExecutor[LogicalPlan]{
       case q: LogicalPlan =>
         logTrace(s"Attempting to resolve ${q.simpleString(25)}")
         q.mapExpressions(resolveExpressionTopDown(_, q))
+    }
+  }
+
+  /**
+   * Replaces [[UnresolvedAlias]]s with concrete aliases.
+   */
+  object ResolveAliases extends Rule[LogicalPlan] {
+    private def assignAliases(exprs: Seq[NamedExpression]) = {
+      exprs.map(_.transformUp { case u @ UnresolvedAlias(child, optGenAliasFunc) =>
+          child match {
+            case ne: NamedExpression => ne
+            //case go @ GeneratorOuter(g: Generator) if g.resolved => MultiAlias(go, Nil)
+            case e if !e.resolved => u
+            //case g: Generator => MultiAlias(g, Nil)
+            case c @ Cast(ne: NamedExpression, _, _) => Alias(c, ne.name)()
+            case e: ExtractValue => Alias(e, toPrettySQL(e))()
+            case e if optGenAliasFunc.isDefined =>
+              Alias(child, optGenAliasFunc.get.apply(e))()
+            case e => Alias(e, toPrettySQL(e))()
+          }
+        }
+      ).asInstanceOf[Seq[NamedExpression]]
+    }
+
+    private def hasUnresolvedAlias(exprs: Seq[NamedExpression]) =
+      exprs.exists(_.find(_.isInstanceOf[UnresolvedAlias]).isDefined)
+
+    def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsUp {
+      case Project(projectList, child) if child.resolved && hasUnresolvedAlias(projectList) =>
+        Project(assignAliases(projectList), child)
     }
   }
 }
