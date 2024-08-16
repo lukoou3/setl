@@ -34,4 +34,20 @@ package object analysis {
     }
   }
 
+  implicit class MultipartIdentifierHelper(parts: Seq[String]) {
+    if (parts.isEmpty) {
+      throw new AnalysisException("multi-part identifier cannot be empty.")
+    }
+
+    def quoted: String = parts.map(quoteIfNeeded).mkString(".")
+  }
+
+  def quoteIfNeeded(part: String): String = {
+    if (part.contains(".") || part.contains("`")) {
+      s"`${part.replace("`", "``")}`"
+    } else {
+      part
+    }
+  }
+
 }

@@ -1,5 +1,6 @@
 package com.lk.setl.sql.catalyst.expressions
 
+import com.lk.setl.Logging
 import com.lk.setl.sql.Row
 import com.lk.setl.sql.catalyst.analysis.TypeCheckResult
 import com.lk.setl.sql.catalyst.expressions.codegen.Block.BlockHelper
@@ -23,6 +24,17 @@ abstract class BasePredicate {
  */
 trait Predicate extends Expression {
   override def dataType: DataType = BooleanType
+}
+
+trait PredicateHelper extends Logging {
+  protected def splitConjunctivePredicates(condition: Expression): Seq[Expression] = {
+    condition match {
+      case And(cond1, cond2) =>
+        splitConjunctivePredicates(cond1) ++ splitConjunctivePredicates(cond2)
+      case other => other :: Nil
+    }
+  }
+
 }
 
 abstract class BinaryComparison extends BinaryOperator with Predicate {

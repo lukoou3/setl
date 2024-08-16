@@ -182,6 +182,7 @@ case class UnresolvedAttribute(nameParts: Seq[String]) extends Attribute with Un
   override lazy val resolved = false
 
   override def newInstance(): UnresolvedAttribute = this
+  override def withNullability(newNullability: Boolean): UnresolvedAttribute = this
   override def withQualifier(newQualifier: Seq[String]): UnresolvedAttribute = this
   override def withName(newName: String): UnresolvedAttribute = UnresolvedAttribute.quoted(newName)
   override def withExprId(newExprId: Long): UnresolvedAttribute = this

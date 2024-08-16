@@ -154,3 +154,5 @@ abstract class BinaryNode extends LogicalPlan {
 abstract class OrderPreservingUnaryNode extends UnaryNode {
   override final def outputOrdering: Seq[SortOrder] = child.outputOrdering
 }
+
+case class RelationPlaceholder(output: Seq[AttributeReference]) extends LeafNode

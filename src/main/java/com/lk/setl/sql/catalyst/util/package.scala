@@ -10,13 +10,6 @@ package object util extends Logging{
   /** Whether we have warned about plan string truncation yet. */
   private val truncationWarningPrinted = new AtomicBoolean(false)
 
-  def quoteIdentifier(name: String): String = {
-    // Escapes back-ticks within the identifier name with double-back-ticks, and then quote the
-    // identifier with back-ticks.
-    "`" + name.replace("`", "``") + "`"
-  }
-
-
   def sideBySide(left: String, right: String): Seq[String] = {
     sideBySide(left.split("\n"), right.split("\n"))
   }

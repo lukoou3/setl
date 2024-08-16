@@ -4,6 +4,7 @@ import com.lk.setl.Logging
 import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.catalyst.SimpleProject
 import com.lk.setl.sql.catalyst.expressions.Expression
+import com.lk.setl.sql.catalyst.plans.logical.LogicalPlan
 import com.lk.setl.sql.catalyst.trees.Origin
 import com.lk.setl.sql.types.DataType
 import org.antlr.v4.runtime.atn.PredictionMode
@@ -34,6 +35,16 @@ abstract class AbstractSqlParser extends Logging {
   def parseQuery(sqlText: String): SimpleProject = parse(sqlText) { parser =>
     astBuilder.visitSingleStatement(parser.singleStatement()) match {
       case plan: SimpleProject => plan
+      case _ =>
+        val position = Origin(None, None)
+        throw new ParseException(Option(sqlText), "Unsupported SQL statement", position, position)
+    }
+  }
+
+  /** Creates LogicalPlan for a given SQL string. */
+  def parsePlan(sqlText: String): LogicalPlan = parse(sqlText) { parser =>
+    astBuilder.visitSingleStatement(parser.singleStatement()) match {
+      case plan: LogicalPlan => plan
       case _ =>
         val position = Origin(None, None)
         throw new ParseException(Option(sqlText), "Unsupported SQL statement", position, position)

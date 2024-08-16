@@ -71,6 +71,8 @@ abstract class Attribute extends LeafExpression with NamedExpression with NullIn
   @transient
   override lazy val references: AttributeSet = AttributeSet(this)
 
+  def withNullability(newNullability: Boolean): Attribute
+
   def withQualifier(newQualifier: Seq[String]): Attribute
   def withName(newName: String): Attribute
   def withExprId(newExprId: Long): Attribute
@@ -173,6 +175,16 @@ case class AttributeReference(
 
   override def newInstance(): AttributeReference = AttributeReference(name, dataType)(qualifier = qualifier)
 
+  /**
+   * Returns a copy of this [[AttributeReference]] with changed nullability.
+   */
+  override def withNullability(newNullability: Boolean): AttributeReference = {
+    if (nullable == newNullability) {
+      this
+    } else {
+      AttributeReference(name, dataType, newNullability)(exprId, qualifier)
+    }
+  }
 
   override def withName(newName: String): AttributeReference = {
     if (name == newName) {
@@ -236,6 +248,9 @@ case class PrettyAttribute(
 
   override def toString: String = name
   override def sql: String = toString
+
+  override def withNullability(newNullability: Boolean): Attribute =
+    throw new UnsupportedOperationException
 
   override def newInstance(): Attribute = throw new UnsupportedOperationException
   override def withQualifier(newQualifier: Seq[String]): Attribute =

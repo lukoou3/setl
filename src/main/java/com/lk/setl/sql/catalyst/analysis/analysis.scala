@@ -1,8 +1,9 @@
 package com.lk.setl.sql.catalyst.analysis
 
 import com.lk.setl.sql.AnalysisException
+import com.lk.setl.sql.catalyst.QueryPlanningTracker
 import com.lk.setl.sql.catalyst.expressions._
-import com.lk.setl.sql.catalyst.plans.logical.{LogicalPlan, Project}
+import com.lk.setl.sql.catalyst.plans.logical.{AnalysisHelper, LogicalPlan, Project, RelationPlaceholder}
 import com.lk.setl.sql.catalyst.rules.{Rule, RuleExecutor}
 import com.lk.setl.sql.catalyst.util.toPrettySQL
 
@@ -12,7 +13,35 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Provides a logical query plan analyzer, which translates [[UnresolvedAttribute]]s and
  * [[UnresolvedRelation]]s into fully typed objects using information in a [[SessionCatalog]].
  */
-class Analyzer extends RuleExecutor[LogicalPlan]{
+class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExecutor[LogicalPlan] with CheckAnalysis {
+
+  def executeAndCheck(plan: LogicalPlan, tracker: QueryPlanningTracker): LogicalPlan = {
+    if (plan.analyzed) return plan
+    AnalysisHelper.markInAnalyzer {
+      val analyzed = executeAndTrack(plan, tracker)
+      try {
+        checkAnalysis(analyzed)
+        analyzed
+      } catch {
+        case e: AnalysisException =>
+          val ae = new AnalysisException(e.message, e.line, e.startPosition, Option(analyzed))
+          ae.setStackTrace(e.getStackTrace)
+          throw ae
+      }
+    }
+  }
+
+  override def execute(plan: LogicalPlan): LogicalPlan = {
+    // 不需要解析视图
+    //AnalysisContext.reset()
+    try {
+      executeSameContext(plan)
+    } finally {
+      //AnalysisContext.reset()
+    }
+  }
+
+  private def executeSameContext(plan: LogicalPlan): LogicalPlan = super.execute(plan)
 
   def resolver: Resolver = caseInsensitiveResolution
 
@@ -28,11 +57,23 @@ class Analyzer extends RuleExecutor[LogicalPlan]{
 
   override protected def batches: Seq[Batch] = Seq(
     Batch("Resolution", fixedPoint,
-        ResolveReferences,
-        ResolveFunctions,
-        ResolveAliases
+      ResolveRelations ::
+      ResolveReferences ::
+      ResolveFunctions ::
+      ResolveAliases ::
+      TypeCoercion.typeCoercionRules : _*
     )
   )
+
+  /**
+   * Replaces [[UnresolvedRelation]]s with concrete relations from the catalog.
+   */
+  object ResolveRelations extends Rule[LogicalPlan] {
+    override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsUp {
+      case u @ UnresolvedRelation(ident) if ident.size == 1=>
+        tempViews.get(ident.head).getOrElse(u)
+    }
+  }
 
   /**
    * 解析替换函数

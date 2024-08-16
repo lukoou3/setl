@@ -17,6 +17,8 @@
 
 package com.lk.setl.sql
 
+import com.lk.setl.sql.catalyst.plans.logical.LogicalPlan
+
 /**
  * Thrown when a query fails to analyze, usually because the query itself is invalid.
  *
@@ -26,6 +28,8 @@ class AnalysisException protected[sql] (
     val message: String,
     val line: Option[Int] = None,
     val startPosition: Option[Int] = None,
+    // Some plans fail to serialize due to bugs in scala collections.
+    @transient val plan: Option[LogicalPlan] = None,
     val cause: Option[Throwable] = None)
   extends Exception(message, cause.orNull) with Serializable {
 
@@ -36,7 +40,8 @@ class AnalysisException protected[sql] (
   }
 
   override def getMessage: String = {
-    getSimpleMessage
+    val planAnnotation = Option(plan).flatten.map(p => s";\n$p").getOrElse("")
+    getSimpleMessage + planAnnotation
   }
 
   // Outputs an exception without the logical plan.
