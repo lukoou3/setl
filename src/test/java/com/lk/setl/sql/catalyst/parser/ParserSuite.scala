@@ -1,10 +1,13 @@
 package com.lk.setl.sql.catalyst.parser
 
+import com.lk.setl.sql.catalyst.QueryPlanningTracker
 import com.lk.setl.sql.{GenericRow, Row}
 import com.lk.setl.sql.catalyst.expressions._
-import com.lk.setl.sql.catalyst.analysis.UnresolvedAttribute
+import com.lk.setl.sql.catalyst.analysis.{UnresolvedAttribute, UnresolvedRelation}
+import com.lk.setl.sql.catalyst.execution.QueryExecution
 import com.lk.setl.sql.catalyst.expressions.codegen.{GenerateEval, GeneratePredicate, GenerateSafeProjection}
-import com.lk.setl.sql.types.{IntegerType, LongType}
+import com.lk.setl.sql.catalyst.plans.logical._
+import com.lk.setl.sql.types._
 import org.scalatest.funsuite.AnyFunSuite
 
 class ParserSuite extends AnyFunSuite {
@@ -15,6 +18,26 @@ class ParserSuite extends AnyFunSuite {
     println(singleStatement)
     val where = singleStatement.where.get
     println(where)
+  }
+
+  test("parseAndAnalyse") {
+    val schema = StructType(Array(StructField("id", LongType), StructField("name", StringType), StructField("age", IntegerType)))
+    val tempViews = Map("tab" -> RelationPlaceholder(schema.toAttributes))
+    val sql = "select id, name, split(name, '_') names, split(name, '_')[1] name1, age + 1 age from tab where name like '%aa%'"
+    val simpleProject = new CatalystSqlParser().parseQuery(sql)
+    val project = Project(simpleProject.projectList, Filter(simpleProject.where.get, UnresolvedRelation(simpleProject.from)))
+    println(project)
+    val tracker = new QueryPlanningTracker
+    val logicalPlan = new QueryExecution(tempViews, project, tracker)
+    logicalPlan.assertAnalyzed()
+    val analyzed = logicalPlan.analyzed
+    println(analyzed)
+
+    val tracker2 = new QueryPlanningTracker
+    val logicalPlan2 = new QueryExecution(tempViews, project, tracker2)
+    logicalPlan2.assertAnalyzed()
+    val analyzed2 = logicalPlan.analyzed
+    println(analyzed2)
   }
 
   test("parseExpression") {
