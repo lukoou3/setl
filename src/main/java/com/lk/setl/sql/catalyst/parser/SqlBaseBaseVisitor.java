@@ -1,4 +1,5 @@
-package com.lk.setl.sql.catalyst.parser;// Generated from D:/IdeaWorkspace/setl/src/main/antlr4/com/lk/setl/sql/catalyst/parser/SqlBase.g4 by ANTLR 4.13.1
+// Generated from D:\IdeaWorkspace\setl\src\main\antlr4\com\lk\setl\sql\catalyst\parser\SqlBase.g4 by ANTLR 4.7
+package com.lk.setl.sql.catalyst.parser;
 import org.antlr.v4.runtime.tree.AbstractParseTreeVisitor;
 
 /**
@@ -9,7 +10,6 @@ import org.antlr.v4.runtime.tree.AbstractParseTreeVisitor;
  * @param <T> The return type of the visit operation. Use {@link Void} for
  * operations with no return type.
  */
-@SuppressWarnings("CheckReturnValue")
 public class SqlBaseBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements SqlBaseVisitor<T> {
 	/**
 	 * {@inheritDoc}

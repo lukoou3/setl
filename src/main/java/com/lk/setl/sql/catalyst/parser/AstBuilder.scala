@@ -2,12 +2,12 @@ package com.lk.setl.sql.catalyst.parser
 
 import com.lk.setl.Logging
 import com.lk.setl.sql.AnalysisException
-import com.lk.setl.sql.catalyst.SimpleProject
 import com.lk.setl.sql.catalyst.analysis._
 import com.lk.setl.sql.catalyst.expressions._
-import com.lk.setl.sql.catalyst.parser.ParserUtils.{string, stringWithoutUnescape, withOrigin}
+import com.lk.setl.sql.catalyst.parser.ParserUtils.{EnhancedLogicalPlan, string, stringWithoutUnescape, withOrigin}
 import com.lk.setl.sql.catalyst.parser.SqlBaseParser._
-import com.lk.setl.sql.types.{DataType, DoubleType, FloatType, IntegerType, LongType}
+import com.lk.setl.sql.catalyst.plans.logical.{Filter, LogicalPlan, Project}
+import com.lk.setl.sql.types._
 import org.antlr.v4.runtime.ParserRuleContext
 import org.antlr.v4.runtime.tree.{ParseTree, TerminalNode}
 
@@ -29,32 +29,16 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     visitNamedExpression(ctx.namedExpression)
   }
 
-
-  /**
-   * {@inheritDoc  }
-   *
-   * <p>The default implementation returns the result of calling
-   * {@link #   visitChildren} on {@code ctx}.</p>
-   */
-  override def visitSingleStatement(ctx: SingleStatementContext): SimpleProject = withOrigin(ctx) {
-    visit(ctx.statement).asInstanceOf[SimpleProject]
-  }
-
-  override def visitStatementDefault(ctx: StatementDefaultContext): SimpleProject = withOrigin(ctx) {
-    typedVisit[SimpleProject](ctx.query)
-  }
-
-  /**
-   * Create a top-level plan with Common Table Expressions.
-   */
-  override def visitQuery(ctx: QueryContext): SimpleProject = withOrigin(ctx) {
-    typedVisit[SimpleProject](ctx.queryTerm)
+  override def visitSingleStatement(ctx: SingleStatementContext): LogicalPlan = withOrigin(ctx) {
+    visit(ctx.statement).asInstanceOf[LogicalPlan]
   }
 
   override def visitRegularQuerySpecification(
-    ctx: RegularQuerySpecificationContext): SimpleProject = withOrigin(ctx) {
-    val from: Seq[String] = visitFromClause(ctx.fromClause)
-    val where: Option[Expression] = Option(ctx.whereClause).map(x => expression(x.booleanExpression))
+    ctx: RegularQuerySpecificationContext): LogicalPlan = withOrigin(ctx) {
+    //val where: Option[Expression] = Option(ctx.whereClause).map(x => expression(x.booleanExpression))
+    val relation = visitFromClause(ctx.fromClause)
+    // Add where.
+    val withFilter = relation.optionalMap(ctx.whereClause)(withWhereClause)
 
     val expressions = visitNamedExpressionSeq(ctx.selectClause.namedExpressionSeq)
     // Add aggregation or a project.
@@ -63,19 +47,30 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
       case e: Expression => UnresolvedAlias(e)
     }
 
-    SimpleProject(namedExpressions, from, where)
+    if (namedExpressions.nonEmpty) {
+      Project(namedExpressions, withFilter) // select
+    } else {
+      withFilter
+    }
   }
 
-  override def visitFromClause(ctx: FromClauseContext) : Seq[String] = withOrigin(ctx) {
-    typedVisit[Seq[String]](ctx.relation.relationPrimary)
+  override def visitFromClause(ctx: FromClauseContext) : LogicalPlan = withOrigin(ctx) {
+    typedVisit[LogicalPlan](ctx.relation.relationPrimary)
   }
 
   /**
    * Create an aliased table reference. This is typically used in FROM clauses.
    */
-  override def visitTableName(ctx: TableNameContext): Seq[String] = withOrigin(ctx) {
+  override def visitTableName(ctx: TableNameContext): LogicalPlan = withOrigin(ctx) {
     val tableId = visitMultipartIdentifier(ctx.multipartIdentifier)
-    tableId
+    UnresolvedRelation(tableId)
+  }
+
+  /**
+   * Create a logical plan using a where clause.
+   */
+  private def withWhereClause(ctx: WhereClauseContext, plan: LogicalPlan): LogicalPlan = {
+    Filter(expression(ctx.booleanExpression), plan)
   }
 
   /**
@@ -590,5 +585,62 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     }
   }
 
+  /* ********************************************************************************************
+   * DataType parsing
+   * ******************************************************************************************** */
+
+  /**
+   * Resolve/create a primitive type.
+   */
+  override def visitPrimitiveDataType(ctx: PrimitiveDataTypeContext): DataType = withOrigin(ctx) {
+    val dataType = ctx.identifier.getText.toLowerCase(Locale.ROOT)
+    (dataType, ctx.INTEGER_VALUE().asScala.toList) match {
+      case ("boolean", Nil) => BooleanType
+      case ("int" | "integer", Nil) => IntegerType
+      case ("bigint" | "long", Nil) => LongType
+      case ("float" | "real", Nil) => FloatType
+      case ("double", Nil) => DoubleType
+      case ("string", Nil) => StringType
+      case ("binary", Nil) => BinaryType
+      case ("void", Nil) => NullType
+      case (dt, params) =>
+        val dtStr = if (params.nonEmpty) s"$dt(${params.mkString(",")})" else dt
+        throw new ParseException(s"DataType $dtStr is not supported.", ctx)
+    }
+  }
+
+  /**
+   * Create a complex DataType. Arrays, Maps and Structures are supported.
+   */
+  override def visitComplexDataType(ctx: ComplexDataTypeContext): DataType = withOrigin(ctx) {
+    ctx.complex.getType match {
+      case SqlBaseParser.ARRAY =>
+        ArrayType(typedVisit(ctx.dataType(0)))
+      case SqlBaseParser.MAP =>
+        //MapType(typedVisit(ctx.dataType(0)), typedVisit(ctx.dataType(1)))
+        throw new ParseException(s"DataType ${ctx.getText} is not supported.", ctx)
+      case SqlBaseParser.STRUCT =>
+        StructType(Option(ctx.complexColTypeList).toSeq.flatMap(visitComplexColTypeList))
+    }
+  }
+
+  /**
+   * Create a [[StructType]] from a number of column definitions.
+   */
+  override def visitComplexColTypeList(
+      ctx: ComplexColTypeListContext): Seq[StructField] = withOrigin(ctx) {
+    ctx.complexColType().asScala.map(visitComplexColType).toSeq
+  }
+
+  /**
+   * Create a [[StructField]] from a column definition.
+   */
+  override def visitComplexColType(ctx: ComplexColTypeContext): StructField = withOrigin(ctx) {
+    val structField = StructField(
+      name = ctx.identifier.getText,
+      dataType = typedVisit(ctx.dataType()))
+    // 忽略null和注释解析
+    structField
+  }
 
 }

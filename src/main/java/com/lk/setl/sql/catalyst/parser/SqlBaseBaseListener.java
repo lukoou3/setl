@@ -1,4 +1,5 @@
-package com.lk.setl.sql.catalyst.parser;// Generated from D:/IdeaWorkspace/setl/src/main/antlr4/com/lk/setl/sql/catalyst/parser/SqlBase.g4 by ANTLR 4.13.1
+// Generated from D:\IdeaWorkspace\setl\src\main\antlr4\com\lk\setl\sql\catalyst\parser\SqlBase.g4 by ANTLR 4.7
+package com.lk.setl.sql.catalyst.parser;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ErrorNode;
@@ -9,7 +10,6 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  * which can be extended to create a listener which only needs to handle a subset
  * of the available methods.
  */
-@SuppressWarnings("CheckReturnValue")
 public class SqlBaseBaseListener implements SqlBaseListener {
 	/**
 	 * {@inheritDoc}

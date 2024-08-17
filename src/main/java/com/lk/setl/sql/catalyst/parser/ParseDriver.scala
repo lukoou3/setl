@@ -2,7 +2,6 @@ package com.lk.setl.sql.catalyst.parser
 
 import com.lk.setl.Logging
 import com.lk.setl.sql.AnalysisException
-import com.lk.setl.sql.catalyst.SimpleProject
 import com.lk.setl.sql.catalyst.expressions.Expression
 import com.lk.setl.sql.catalyst.plans.logical.LogicalPlan
 import com.lk.setl.sql.catalyst.trees.Origin
@@ -29,16 +28,6 @@ abstract class AbstractSqlParser extends Logging {
   /** Creates Expression for a given SQL string. */
   def parseExpression(sqlText: String): Expression = parse(sqlText) { parser =>
     astBuilder.visitSingleExpression(parser.singleExpression())
-  }
-
-  /** Creates LogicalPlan for a given SQL string. */
-  def parseQuery(sqlText: String): SimpleProject = parse(sqlText) { parser =>
-    astBuilder.visitSingleStatement(parser.singleStatement()) match {
-      case plan: SimpleProject => plan
-      case _ =>
-        val position = Origin(None, None)
-        throw new ParseException(Option(sqlText), "Unsupported SQL statement", position, position)
-    }
   }
 
   /** Creates LogicalPlan for a given SQL string. */

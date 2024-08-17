@@ -14,30 +14,31 @@ class ParserSuite extends AnyFunSuite {
 
   test("parse") {
     val sql = "select id, name, split(name, '_') names, split(name, '_')[1] name1, age1 + age2 age from t where name like '%aa%'"
-    val singleStatement = new CatalystSqlParser().parseQuery(sql)
+    val singleStatement = new CatalystSqlParser().parsePlan(sql)
     println(singleStatement)
-    val where = singleStatement.where.get
-    println(where)
   }
 
   test("parseAndAnalyse") {
     val schema = StructType(Array(StructField("id", LongType), StructField("name", StringType), StructField("age", IntegerType)))
     val tempViews = Map("tab" -> RelationPlaceholder(schema.toAttributes))
     val sql = "select id, name, split(name, '_') names, split(name, '_')[1] name1, age + 1 age from tab where name like '%aa%'"
-    val simpleProject = new CatalystSqlParser().parseQuery(sql)
-    val project = Project(simpleProject.projectList, Filter(simpleProject.where.get, UnresolvedRelation(simpleProject.from)))
+    val project = new CatalystSqlParser().parsePlan(sql)
     println(project)
     val tracker = new QueryPlanningTracker
     val logicalPlan = new QueryExecution(tempViews, project, tracker)
     logicalPlan.assertAnalyzed()
     val analyzed = logicalPlan.analyzed
+    val optimized = logicalPlan.optimizedPlan
     println(analyzed)
+    println(optimized)
 
     val tracker2 = new QueryPlanningTracker
     val logicalPlan2 = new QueryExecution(tempViews, project, tracker2)
     logicalPlan2.assertAnalyzed()
-    val analyzed2 = logicalPlan.analyzed
+    val analyzed2 = logicalPlan2.analyzed
+    val optimized2 = logicalPlan2.optimizedPlan
     println(analyzed2)
+    println(optimized2)
   }
 
   test("parseExpression") {

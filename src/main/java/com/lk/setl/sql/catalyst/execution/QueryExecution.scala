@@ -3,6 +3,7 @@ package com.lk.setl.sql.catalyst.execution
 import com.lk.setl.Logging
 import com.lk.setl.sql.catalyst.QueryPlanningTracker
 import com.lk.setl.sql.catalyst.analysis.Analyzer
+import com.lk.setl.sql.catalyst.optimizer.Optimizer
 import com.lk.setl.sql.catalyst.plans.logical.{LogicalPlan, RelationPlaceholder}
 
 import java.util.concurrent.atomic.AtomicLong
@@ -25,6 +26,7 @@ class QueryExecution(
   val id: Long = QueryExecution.nextExecutionId
   val analyzer = new Analyzer(tempViews)
 
+
   def assertAnalyzed(): Unit = analyzed
 
   def assertSupported(): Unit = {}
@@ -33,6 +35,18 @@ class QueryExecution(
   lazy val analyzed: LogicalPlan = executePhase(QueryPlanningTracker.ANALYSIS) {
     // We can't clone `logical` here, which will reset the `_analyzed` flag.
     analyzer.executeAndCheck(logical, tracker)
+  }
+
+  //optimizer阶段, 优化器
+  lazy val optimizedPlan: LogicalPlan = executePhase(QueryPlanningTracker.OPTIMIZATION) {
+    // clone the plan to avoid sharing the plan instance between different stages like analyzing,
+    // optimizing and planning.
+    val plan = QueryExecution.optimizer.executeAndTrack(analyzed.clone(), tracker)
+    // We do not want optimized plans to be re-analyzed as literals that have been constant folded
+    // and such can cause issues during analysis. While `clone` should maintain the `analyzed` state
+    // of the LogicalPlan, we set the plan as analyzed here as well out of paranoia.
+    plan.setAnalyzed()
+    plan
   }
 
   protected def executePhase[T](phase: String)(block: => T): T = {
@@ -46,4 +60,5 @@ object QueryExecution {
 
   private def nextExecutionId: Long = _nextExecutionId.getAndIncrement
 
+  val optimizer = new Optimizer
 }

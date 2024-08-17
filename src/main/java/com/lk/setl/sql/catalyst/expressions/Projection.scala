@@ -7,6 +7,7 @@ import com.lk.setl.sql.types.{DataType, StructType}
 
 /**
  * A [[Projection]] that is calculated by calling the `eval` of each of the specified expressions.
+ * spark中UserDefinedGenerator中使用
  *
  * @param expressions a sequence of expressions that determine the value of each column of the
  *                    output row.
