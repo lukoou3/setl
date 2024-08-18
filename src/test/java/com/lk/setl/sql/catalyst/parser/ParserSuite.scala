@@ -1,7 +1,7 @@
 package com.lk.setl.sql.catalyst.parser
 
 import com.lk.setl.sql.catalyst.QueryPlanningTracker
-import com.lk.setl.sql.{GenericRow, Row}
+import com.lk.setl.sql.{GenericRow, Row, SqlUtils}
 import com.lk.setl.sql.catalyst.expressions._
 import com.lk.setl.sql.catalyst.analysis.{UnresolvedAttribute, UnresolvedRelation}
 import com.lk.setl.sql.catalyst.execution.QueryExecution
@@ -11,6 +11,36 @@ import com.lk.setl.sql.types._
 import org.scalatest.funsuite.AnyFunSuite
 
 class ParserSuite extends AnyFunSuite {
+
+  test("parseLateralView") {
+    val schema = SqlUtils.parseStructType("id: bigint, name: string, age: int, datas: array<int>")
+    val tempViews = Map("tab" -> RelationPlaceholder(schema.toAttributes))
+    val sql = "select id, name, data from tab lateral view explode(datas) as data where id > 10"
+    val singleStatement = new CatalystSqlParser().parsePlan(sql)
+    println(singleStatement)
+    val tracker = new QueryPlanningTracker
+    val logicalPlan = new QueryExecution(tempViews, singleStatement, tracker)
+    logicalPlan.assertAnalyzed()
+    val analyzed = logicalPlan.analyzed
+    val optimized = logicalPlan.optimizedPlan
+    println(analyzed)
+    println(optimized)
+  }
+
+  test("parseOptimizer") {
+    val schema = SqlUtils.parseStructType("id: bigint, name: string, age: int, datas: array<int>")
+    val tempViews = Map("tab" -> RelationPlaceholder(schema.toAttributes))
+    val sql = "select id, name from tab  where id > 10"
+    val singleStatement = new CatalystSqlParser().parsePlan(sql)
+    println(singleStatement)
+    val tracker = new QueryPlanningTracker
+    val logicalPlan = new QueryExecution(tempViews, singleStatement, tracker)
+    logicalPlan.assertAnalyzed()
+    val analyzed = logicalPlan.analyzed
+    val optimized = logicalPlan.optimizedPlan
+    println(analyzed)
+    println(optimized)
+  }
 
   test("parse") {
     val sql = "select id, name, split(name, '_') names, split(name, '_')[1] name1, age1 + age2 age from t where name like '%aa%'"

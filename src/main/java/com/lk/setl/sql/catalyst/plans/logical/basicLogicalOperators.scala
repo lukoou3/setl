@@ -55,7 +55,6 @@ case class Generate(
     generatorOutput: Seq[Attribute],
     child: LogicalPlan)
   extends UnaryNode {
-
   lazy val requiredChildOutput: Seq[Attribute] = {
     val unrequiredSet = unrequiredChildIndex.toSet
     child.output.zipWithIndex.filterNot(t => unrequiredSet.contains(t._2)).map(_._1)
@@ -70,8 +69,10 @@ case class Generate(
 
   override def producedAttributes: AttributeSet = AttributeSet(generatorOutput)
 
+  // 给输出添加表前缀，如果定义table_alias
   def qualifiedGeneratorOutput: Seq[Attribute] = {
     val qualifiedOutput = qualifier.map { q =>
+      // 是否定义table_alias
       // prepend the new qualifier to the existed one
       generatorOutput.map(a => a.withQualifier(Seq(q)))
     }.getOrElse(generatorOutput)

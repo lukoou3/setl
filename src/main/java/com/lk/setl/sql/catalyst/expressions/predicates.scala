@@ -83,7 +83,7 @@ trait Predicate extends Expression {
   override def dataType: DataType = BooleanType
 }
 
-trait PredicateHelper extends Logging {
+trait PredicateHelper extends AliasHelper with Logging {
   protected def splitConjunctivePredicates(condition: Expression): Seq[Expression] = {
     condition match {
       case And(cond1, cond2) =>

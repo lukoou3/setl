@@ -3,7 +3,7 @@ package com.lk.setl.sql.catalyst.analysis
 import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.catalyst.QueryPlanningTracker
 import com.lk.setl.sql.catalyst.expressions._
-import com.lk.setl.sql.catalyst.plans.logical.{AnalysisHelper, LogicalPlan, Project, RelationPlaceholder}
+import com.lk.setl.sql.catalyst.plans.logical.{AnalysisHelper, Generate, LogicalPlan, Project, RelationPlaceholder}
 import com.lk.setl.sql.catalyst.rules.{Rule, RuleExecutor}
 import com.lk.setl.sql.catalyst.util.toPrettySQL
 
@@ -59,6 +59,7 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
     Batch("Resolution", fixedPoint,
       ResolveRelations ::
       ResolveReferences ::
+      ResolveGenerate ::
       ResolveFunctions ::
       ResolveAliases ::
       TypeCoercion.typeCoercionRules : _*
@@ -88,17 +89,17 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
           /*case u: UnresolvedAttribute if resolver(u.name, VirtualColumn.hiveGroupingIdName) =>
             withPosition(u) {
               Alias(GroupingID(Nil), VirtualColumn.hiveGroupingIdName)()
-            }
+            }*/
           case u @ UnresolvedGenerator(name, children) =>
             withPosition(u) {
               // 匹配函数
-              v1SessionCatalog.lookupFunction(name, children) match {
+              FunctionRegistry.builtin.lookupFunction(name, children) match {
                 case generator: Generator => generator
                 case other =>
                   failAnalysis(s"$name is expected to be a generator. However, " +
                     s"its class is ${other.getClass.getCanonicalName}, which is not a generator.")
               }
-            }*/
+            }
           case u @ UnresolvedFunction(funcId, arguments, filter) =>
             withPosition(u) {
               // 匹配函数
@@ -119,6 +120,49 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
               }
             }
         }
+    }
+  }
+
+  /**
+   * Resolves the attribute, column value and extract value expressions(s) by traversing the
+   * input expression in bottom-up manner. In order to resolve the nested complex type fields
+   * correctly, this function makes use of `throws` parameter to control when to raise an
+   * AnalysisException.
+   *
+   * Example :
+   * SELECT a.b FROM t ORDER BY b[0].d
+   *
+   * In the above example, in b needs to be resolved before d can be resolved. Given we are
+   * doing a bottom up traversal, it will first attempt to resolve d and fail as b has not
+   * been resolved yet. If `throws` is false, this function will handle the exception by
+   * returning the original attribute. In this case `d` will be resolved in subsequent passes
+   * after `b` is resolved.
+   */
+  protected[sql] def resolveExpressionBottomUp(
+      expr: Expression,
+      plan: LogicalPlan,
+      throws: Boolean = false): Expression = {
+    if (expr.resolved) return expr
+    // Resolve expression in one round.
+    // If throws == false or the desired attribute doesn't exist
+    // (like try to resolve `a.b` but `a` doesn't exist), fail and return the origin one.
+    // Else, throw exception.
+    try {
+      expr transformUp {
+        // case GetColumnByOrdinal(ordinal, _) => plan.output(ordinal)
+        case u @ UnresolvedAttribute(nameParts) =>
+          val result =
+            withPosition(u) {
+              plan.resolve(nameParts, resolver)
+                .getOrElse(u)
+            }
+          logDebug(s"Resolving $u to $result")
+          result
+        case UnresolvedExtractValue(child, fieldName) if child.resolved =>
+          ExtractValue(child, fieldName, resolver)
+      }
+    } catch {
+      case a: AnalysisException if !throws => expr
     }
   }
 
@@ -193,6 +237,17 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
 
     override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsUp {
       case p: LogicalPlan if !p.childrenResolved => p
+      // A special case for Generate, because the output of Generate should not be resolved by
+      // ResolveReferences. Attributes in the output will be resolved by ResolveGenerate.
+      case g @ Generate(generator, _, _, _, _, _) if generator.resolved => g
+
+      case g @ Generate(generator, join, outer, qualifier, output, child) =>
+        val newG = resolveExpressionBottomUp(generator, child, throws = true)
+        if (newG.fastEquals(generator)) {
+          g
+        } else {
+          Generate(newG.asInstanceOf[Generator], join, outer, qualifier, output, child)
+        }
       case q: LogicalPlan =>
         logTrace(s"Attempting to resolve ${q.simpleString(25)}")
         q.mapExpressions(resolveExpressionTopDown(_, q))
@@ -228,6 +283,47 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
         Project(assignAliases(projectList), child)
     }
   }
+
+  /**
+   * Rewrites table generating expressions that either need one or more of the following in order
+   * to be resolved:
+   *  - concrete attribute references for their output.
+   *  - to be relocated from a SELECT clause (i.e. from  a [[Project]]) into a [[Generate]]).
+   *
+   * Names for the output [[Attribute]]s are extracted from [[Alias]] or [[MultiAlias]] expressions
+   * that wrap the [[Generator]].
+   */
+  object ResolveGenerate extends Rule[LogicalPlan] {
+    def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsUp {
+      case g: Generate if !g.child.resolved || !g.generator.resolved => g
+      case g: Generate if !g.resolved =>
+        g.copy(generatorOutput = makeGeneratorOutput(g.generator, g.generatorOutput.map(_.name)))
+    }
+
+    /**
+     * Construct the output attributes for a [[Generator]], given a list of names.  If the list of
+     * names is empty names are assigned from field names in generator.
+     */
+    private[analysis] def makeGeneratorOutput(
+        generator: Generator,
+        names: Seq[String]): Seq[Attribute] = {
+      val elementAttrs = generator.elementSchema.toAttributes
+
+      if (names.length == elementAttrs.length) {
+        names.zip(elementAttrs).map {
+          case (name, attr) => attr.withName(name)
+        }
+      } else if (names.isEmpty) {
+        elementAttrs
+      } else {
+        failAnalysis(
+          "The number of aliases supplied in the AS clause does not match the number of columns " +
+          s"output by the UDTF expected ${elementAttrs.size} aliases but got " +
+          s"${names.mkString(",")} ")
+      }
+    }
+  }
+
 }
 
 

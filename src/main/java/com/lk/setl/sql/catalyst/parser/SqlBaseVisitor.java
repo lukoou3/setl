@@ -117,6 +117,12 @@ public interface SqlBaseVisitor<T> extends ParseTreeVisitor<T> {
 	 */
 	T visitFromClause(SqlBaseParser.FromClauseContext ctx);
 	/**
+	 * Visit a parse tree produced by {@link SqlBaseParser#lateralView}.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	T visitLateralView(SqlBaseParser.LateralViewContext ctx);
+	/**
 	 * Visit a parse tree produced by {@link SqlBaseParser#relation}.
 	 * @param ctx the parse tree
 	 * @return the visitor result

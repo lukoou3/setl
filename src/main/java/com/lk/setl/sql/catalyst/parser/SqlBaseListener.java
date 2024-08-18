@@ -186,6 +186,16 @@ public interface SqlBaseListener extends ParseTreeListener {
 	 */
 	void exitFromClause(SqlBaseParser.FromClauseContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link SqlBaseParser#lateralView}.
+	 * @param ctx the parse tree
+	 */
+	void enterLateralView(SqlBaseParser.LateralViewContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link SqlBaseParser#lateralView}.
+	 * @param ctx the parse tree
+	 */
+	void exitLateralView(SqlBaseParser.LateralViewContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link SqlBaseParser#relation}.
 	 * @param ctx the parse tree
 	 */

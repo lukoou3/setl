@@ -1,8 +1,9 @@
 package com.lk.setl.sql.catalyst.analysis
 
-import com.lk.setl.sql.AnalysisException
+import com.lk.setl.sql.{AnalysisException, Row}
 import com.lk.setl.sql.catalyst.errors.TreeNodeException
-import com.lk.setl.sql.catalyst.expressions.{Alias, Attribute, BinaryExpression, Expression, GetStructField, LeafExpression, NamedExpression, UnaryExpression, Unevaluable}
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
+import com.lk.setl.sql.catalyst.expressions.{Alias, Attribute, BinaryExpression, Expression, Generator, GetStructField, LeafExpression, NamedExpression, UnaryExpression, Unevaluable}
 import com.lk.setl.sql.catalyst.parser.ParserUtils
 import com.lk.setl.sql.catalyst.plans.logical.LeafNode
 import com.lk.setl.sql.catalyst.trees.TreeNode
@@ -43,6 +44,33 @@ case class UnresolvedRelation(
       part
     }
   }
+}
+
+/**
+ * Represents an unresolved generator, which will be created by the parser for
+ * the [[com.lk.setl.sql.catalyst.plans.logical.Generate]] operator.
+ * The analyzer will resolve this generator.
+ */
+case class UnresolvedGenerator(name: String, children: Seq[Expression])
+  extends Generator {
+
+  override def elementSchema: StructType = throw new UnresolvedException(this, "elementTypes")
+  override def dataType: DataType = throw new UnresolvedException(this, "dataType")
+  override def foldable: Boolean = throw new UnresolvedException(this, "foldable")
+  override def nullable: Boolean = throw new UnresolvedException(this, "nullable")
+  override lazy val resolved = false
+
+  override def prettyName: String = name
+  override def toString: String = s"'$name(${children.mkString(", ")})"
+
+  override def eval(input: Row = null): TraversableOnce[Row] =
+    throw new UnsupportedOperationException(s"Cannot evaluate expression: $this")
+
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    throw new UnsupportedOperationException(s"Cannot generate code for expression: $this")
+
+  override def terminate(): TraversableOnce[Row] =
+    throw new UnsupportedOperationException(s"Cannot terminate expression: $this")
 }
 
 case class UnresolvedFunction(

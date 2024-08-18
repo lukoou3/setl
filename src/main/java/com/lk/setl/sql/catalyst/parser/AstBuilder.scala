@@ -6,7 +6,7 @@ import com.lk.setl.sql.catalyst.analysis._
 import com.lk.setl.sql.catalyst.expressions._
 import com.lk.setl.sql.catalyst.parser.ParserUtils.{EnhancedLogicalPlan, string, stringWithoutUnescape, withOrigin}
 import com.lk.setl.sql.catalyst.parser.SqlBaseParser._
-import com.lk.setl.sql.catalyst.plans.logical.{Filter, LogicalPlan, Project}
+import com.lk.setl.sql.catalyst.plans.logical.{Filter, Generate, LogicalPlan, Project}
 import com.lk.setl.sql.types._
 import org.antlr.v4.runtime.ParserRuleContext
 import org.antlr.v4.runtime.tree.{ParseTree, TerminalNode}
@@ -37,8 +37,15 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     ctx: RegularQuerySpecificationContext): LogicalPlan = withOrigin(ctx) {
     //val where: Option[Expression] = Option(ctx.whereClause).map(x => expression(x.booleanExpression))
     val relation = visitFromClause(ctx.fromClause)
+    val lateralView = ctx.lateralView().asScala
+    if(lateralView.length > 1){
+      throw new ParseException(s"now only supported one generator_function ", ctx)
+    }
+    // Add lateral views.
+    val withLateralView = relation.optionalMap(lateralView.headOption.getOrElse(null))((g, l) => withGenerate(l, g))
+
     // Add where.
-    val withFilter = relation.optionalMap(ctx.whereClause)(withWhereClause)
+    val withFilter = withLateralView.optionalMap(ctx.whereClause)(withWhereClause)
 
     val expressions = visitNamedExpressionSeq(ctx.selectClause.namedExpressionSeq)
     // Add aggregation or a project.
@@ -64,6 +71,24 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   override def visitTableName(ctx: TableNameContext): LogicalPlan = withOrigin(ctx) {
     val tableId = visitMultipartIdentifier(ctx.multipartIdentifier)
     UnresolvedRelation(tableId)
+  }
+
+  /**
+   * Add a [[Generate]] (Lateral View) to a logical plan.
+   */
+  private def withGenerate(
+      query: LogicalPlan,
+      ctx: LateralViewContext): LogicalPlan = withOrigin(ctx) {
+    val expressions = expressionList(ctx.expression)
+    Generate(
+      UnresolvedGenerator(visitFunctionName(ctx.qualifiedName), expressions),
+      unrequiredChildIndex = Nil,
+      outer = ctx.OUTER != null,
+      // scalastyle:off caselocale
+      Some(ctx.tblName.getText.toLowerCase),
+      // scalastyle:on caselocale
+      ctx.colName.asScala.map(_.getText).map(UnresolvedAttribute.apply).toSeq,
+      query)
   }
 
   /**

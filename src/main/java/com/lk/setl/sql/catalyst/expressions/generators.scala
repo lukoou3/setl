@@ -1,7 +1,8 @@
 package com.lk.setl.sql.catalyst.expressions
 
-import com.lk.setl.sql.Row
-import com.lk.setl.sql.catalyst.expressions.codegen.CodegenFallback
+import com.lk.setl.sql.{ArrayData, GenericRow, Row}
+import com.lk.setl.sql.catalyst.analysis.TypeCheckResult
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodegenContext, CodegenFallback, ExprCode}
 import com.lk.setl.sql.types._
 
 /**
@@ -45,4 +46,115 @@ trait Generator extends Expression {
    * Check if this generator supports code generation.
    */
   def supportCodegen: Boolean = !isInstanceOf[CodegenFallback]
+}
+
+/**
+ * A collection producing [[Generator]]. This trait provides a different path for code generation,
+ * by allowing code generation to return either an [[ArrayData]] or a [[MapData]] object.
+ */
+trait CollectionGenerator extends Generator {
+  /** The position of an element within the collection should also be returned. */
+  def position: Boolean
+
+  /** Rows will be inlined during generation. */
+  def inline: Boolean
+
+  /** The type of the returned collection object. */
+  def collectionType: DataType = dataType
+}
+
+/**
+ * Wrapper around another generator to specify outer behavior. This is used to implement functions
+ * such as explode_outer. This expression gets replaced during analysis.
+ */
+case class GeneratorOuter(child: Generator) extends UnaryExpression with Generator {
+  final override def eval(input: Row = null): TraversableOnce[Row] =
+    throw new UnsupportedOperationException(s"Cannot evaluate expression: $this")
+
+  final override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =
+    throw new UnsupportedOperationException(s"Cannot generate code for expression: $this")
+
+  override def elementSchema: StructType = child.elementSchema
+
+  override lazy val resolved: Boolean = false
+}
+
+/**
+ * A base class for [[Explode]] and [[PosExplode]].
+ */
+abstract class ExplodeBase extends UnaryExpression with CollectionGenerator with Serializable {
+  override val inline: Boolean = false
+
+  override def checkInputDataTypes(): TypeCheckResult = child.dataType match {
+    case _: ArrayType  =>
+      TypeCheckResult.TypeCheckSuccess
+    case _ =>
+      TypeCheckResult.TypeCheckFailure(
+        "input to function explode should be array or map type, " +
+          s"not ${child.dataType.catalogString}")
+  }
+
+  // hive-compatible default alias for explode function ("col" for array, "key", "value" for map)
+  override def elementSchema: StructType = child.dataType match {
+    case ArrayType(et, containsNull) =>
+      if (position) {
+        new StructType()
+          .add("pos", IntegerType)
+          .add("col", et)
+      } else {
+        new StructType()
+          .add("col", et)
+      }
+  }
+
+  override def eval(input: Row): TraversableOnce[Row] = {
+    child.dataType match {
+      case ArrayType(et, _) =>
+        val inputArray = child.eval(input).asInstanceOf[ArrayData]
+        if (inputArray == null) {
+          Nil
+        } else {
+          val rows = new Array[Row](inputArray.numElements())
+          var i = 0
+          while(i < inputArray.numElements()){
+            val e = inputArray.get(i)
+            rows(i) = if (position) new GenericRow(Array(i, e)) else new GenericRow(Array(e))
+            i += 1
+          }
+          rows
+        }
+    }
+  }
+
+  override def collectionType: DataType = child.dataType
+
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    child.genCode(ctx)
+  }
+}
+
+/**
+ * Given an input array produces a sequence of rows for each value in the array.
+ *
+ * {{{
+ *   SELECT explode(array(10,20)) ->
+ *   10
+ *   20
+ * }}}
+ */
+case class Explode(child: Expression) extends ExplodeBase {
+  override val position: Boolean = false
+}
+
+/**
+ * Given an input array produces a sequence of rows for each position and value in the array.
+ *
+ * {{{
+ *   SELECT posexplode(array(10,20)) ->
+ *   0  10
+ *   1  20
+ * }}}
+ */
+case class PosExplode(child: Expression) extends ExplodeBase {
+  override val position = true
 }

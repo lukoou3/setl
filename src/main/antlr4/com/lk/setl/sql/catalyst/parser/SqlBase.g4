@@ -126,6 +126,7 @@ queryPrimary
 querySpecification
     : selectClause
       fromClause
+      lateralView*
       whereClause?
       aggregationClause?
       havingClause?                                                         #regularQuerySpecification
@@ -146,6 +147,10 @@ havingClause
 
 fromClause
     : FROM relation
+    ;
+
+lateralView
+    : LATERAL VIEW (OUTER)? qualifiedName '(' (expression (',' expression)*)? ')' tblName=identifier (AS? colName+=identifier (',' colName+=identifier)*)?
     ;
 
 relation
