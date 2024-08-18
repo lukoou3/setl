@@ -1,13 +1,55 @@
 package com.lk.setl.sql.catalyst.optimizer
 
+import scala.collection.immutable.HashSet
+
+import com.lk.setl.sql.catalyst.expressions.Literal.FalseLiteral
 import com.lk.setl.sql.catalyst.expressions._
 import com.lk.setl.sql.catalyst.plans.logical.LogicalPlan
 import com.lk.setl.sql.catalyst.rules.Rule
-import com.lk.setl.sql.types.{BooleanType, StringType}
+import com.lk.setl.sql.types._
+
 
 /*
  * Optimization rules defined in this file should not affect the structure of the logical plan.
  */
+
+/**
+ * 优化IN谓词：
+ * 1。当列表为空且值不可为null时，将谓词转换为false。
+ * 2.删除literal重复。
+ * 3.用更快的优化版本（value，HashSet[Literal]）替换（value，seq[Literal]]）。
+ * Optimize IN predicates:
+ * 1. Converts the predicate to false when the list is empty and
+ *    the value is not nullable.
+ * 2. Removes literal repetitions.
+ * 3. Replaces [[In (value, seq[Literal])]] with optimized version
+ *    [[InSet (value, HashSet[Literal])]] which is much faster.
+ */
+object OptimizeIn extends Rule[LogicalPlan] {
+  def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+    case q: LogicalPlan => q transformExpressionsDown {
+      case In(v, list) if list.isEmpty =>
+        // When v is not nullable, the following expression will be optimized
+        // to FalseLiteral which is tested in OptimizeInSuite.scala
+        If(IsNotNull(v), FalseLiteral, Literal(null, BooleanType))
+      case expr @ In(v, list) if expr.inSetConvertible =>
+        val newList = ExpressionSet(list).toSeq
+        if (newList.length == 1
+          // TODO: `EqualTo` for structural types are not working. Until SPARK-24443 is addressed,
+          // TODO: we exclude them in this rule.
+          && !v.dataType.isInstanceOf[StructType]) {
+          EqualTo(v, newList.head)
+        } else if (newList.length > 10) { // SQLConf.get.optimizerInSetConversionThreshold
+          val hSet = newList.map(e => e.eval(EmptyRow))
+          InSet(v, HashSet() ++ hSet)
+        } else if (newList.length < list.length) {
+          expr.copy(list = newList)
+        } else { // newList.length == list.length && newList.length > 1
+          expr
+        }
+    }
+  }
+}
 
 /**
  * 用等效的Literal值替换可以静态计算的表达式。
@@ -109,5 +151,34 @@ object LikeSimplification extends Rule[LogicalPlan] {
     case l @ NotLikeAll(child, patterns) => simplifyMultiLike(child, patterns, l)
     case l @ LikeAny(child, patterns) => simplifyMultiLike(child, patterns, l)
     case l @ NotLikeAny(child, patterns) => simplifyMultiLike(child, patterns, l)*/
+  }
+}
+
+/**
+ * 删除不必要的强制转换，因为输入已经是正确的类型。
+ * Removes [[Cast Casts]] that are unnecessary because the input is already the correct type.
+ */
+object SimplifyCasts extends Rule[LogicalPlan] {
+  def apply(plan: LogicalPlan): LogicalPlan = plan transformAllExpressions {
+    case Cast(e, dataType, _) if e.dataType == dataType => e
+    case c @ Cast(e, dataType, _) => (e.dataType, dataType) match {
+      case (ArrayType(from, false), ArrayType(to, true)) if from == to => e
+      case _ => c
+      }
+  }
+}
+
+/**
+ * Removes the inner case conversion expressions that are unnecessary because
+ * the inner conversion is overwritten by the outer one.
+ */
+object SimplifyCaseConversionExpressions extends Rule[LogicalPlan] {
+  def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+    case q: LogicalPlan => q transformExpressionsUp {
+      case Upper(Upper(child)) => Upper(child)
+      case Upper(Lower(child)) => Upper(child)
+      case Lower(Upper(child)) => Lower(child)
+      case Lower(Lower(child)) => Lower(child)
+    }
   }
 }

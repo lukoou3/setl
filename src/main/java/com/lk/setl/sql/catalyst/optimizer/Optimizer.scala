@@ -12,8 +12,11 @@ class Optimizer extends RuleExecutor[LogicalPlan] {
 
   def defaultBatches: Seq[Batch] = {
     val operatorOptimizationRuleSet = Seq(
+      OptimizeIn,
       ConstantFolding,
-      LikeSimplification
+      LikeSimplification,
+      SimplifyCasts,
+      SimplifyCaseConversionExpressions
     )
     val operatorOptimizationBatch: Seq[Batch] = Seq(
       Batch("Operator Optimization", fixedPoint, operatorOptimizationRuleSet: _*)

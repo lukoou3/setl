@@ -3,8 +3,9 @@ package com.lk.setl.sql.catalyst.expressions
 import com.lk.setl.Logging
 import com.lk.setl.sql.Row
 import com.lk.setl.sql.catalyst.analysis.TypeCheckResult
+import com.lk.setl.sql.catalyst.expressions.BindReferences.bindReference
 import com.lk.setl.sql.catalyst.expressions.codegen.Block.BlockHelper
-import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode, FalseLiteral}
+import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode, FalseLiteral, GeneratePredicate}
 import com.lk.setl.sql.catalyst.util.TypeUtils
 import com.lk.setl.sql.types.{AbstractDataType, AnyDataType, AtomicType, BooleanType, DataType, DoubleType, FloatType, IntegerType, NullType}
 
@@ -17,6 +18,62 @@ abstract class BasePredicate {
   def eval(r: Row): Boolean
 
   def initialize(partitionIndex: Int): Unit = {}
+}
+
+case class InterpretedPredicate(expression: Expression) extends BasePredicate {
+  private[this] val subExprEliminationEnabled = false
+  private[this] lazy val runtime = new SubExprEvaluationRuntime(100)
+  private[this] val expr = if (subExprEliminationEnabled) {
+    runtime.proxyExpressions(Seq(expression)).head
+  } else {
+    expression
+  }
+
+  override def eval(r: Row): Boolean = {
+    if (subExprEliminationEnabled) {
+      runtime.setInput(r)
+    }
+
+    expr.eval(r).asInstanceOf[Boolean]
+  }
+
+  override def initialize(partitionIndex: Int): Unit = {
+    super.initialize(partitionIndex)
+    expr.foreach {
+      case n: Nondeterministic => n.initialize(partitionIndex)
+      case _ =>
+    }
+  }
+}
+
+/**
+ * The factory object for `BasePredicate`.
+ */
+object Predicate extends CodeGeneratorWithInterpretedFallback[Expression, BasePredicate] {
+
+  override protected def createCodeGeneratedObject(in: Expression): BasePredicate = {
+    GeneratePredicate.generate(in)
+  }
+
+  override protected def createInterpretedObject(in: Expression): BasePredicate = {
+    InterpretedPredicate(in)
+  }
+
+  def createInterpreted(e: Expression): InterpretedPredicate = InterpretedPredicate(e)
+
+  /**
+   * Returns a BasePredicate for an Expression, which will be bound to `inputSchema`.
+   */
+  def create(e: Expression, inputSchema: Seq[Attribute]): BasePredicate = {
+    createObject(bindReference(e, inputSchema))
+  }
+
+  /**
+   * Returns a BasePredicate for a given bound Expression.
+   */
+  def create(e: Expression): BasePredicate = {
+    createObject(e)
+  }
 }
 
 /**
@@ -191,7 +248,7 @@ case class In(value: Expression, list: Seq[Expression]) extends Predicate {
   require(list != null, "list should not be null")
 
   override def checkInputDataTypes(): TypeCheckResult = {
-    val mismatchOpt = list.find(l => l.dataType == value.dataType)
+    val mismatchOpt = list.find(l => l.dataType != value.dataType)
     if (mismatchOpt.isDefined) {
       TypeCheckResult.TypeCheckFailure(s"Arguments must be same type but were: " +
         s"${value.dataType.catalogString} != ${mismatchOpt.get.dataType.catalogString}")
