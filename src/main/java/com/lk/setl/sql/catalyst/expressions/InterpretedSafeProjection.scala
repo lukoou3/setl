@@ -23,7 +23,7 @@ class InterpretedSafeProjection(expressions: Seq[Expression]) extends Projection
 
   private[this] val mutableRow = new GenericRow(new Array[Any](expressions.length))
 
-  private[this] val exprsWithWriters = expressions.zipWithIndex.filter {
+  /*private[this] val exprsWithWriters = expressions.zipWithIndex.filter {
     case (NoOp, _) => false
     case _ => true
   }.map { case (e, i) =>
@@ -40,7 +40,7 @@ class InterpretedSafeProjection(expressions: Seq[Expression]) extends Projection
       }
     }
     (exprs(i), f)
-  }
+  }*/
 
   private def generateSafeValueConverter(dt: DataType): Any => Any = dt match {
     case ArrayType(elemType, _) =>
@@ -79,9 +79,14 @@ class InterpretedSafeProjection(expressions: Seq[Expression]) extends Projection
     }
 
     var i = 0
-    while (i < exprsWithWriters.length) {
+    /*while (i < exprsWithWriters.length) {
       val (expr, writer) = exprsWithWriters(i)
       writer(expr.eval(row))
+      i += 1
+    }*/
+    // 没有NoOp，也不需要转换, 没有unsafe版本row和array
+    while (i < exprs.length) {
+      mutableRow.update(i, exprs(i).eval(row))
       i += 1
     }
     mutableRow

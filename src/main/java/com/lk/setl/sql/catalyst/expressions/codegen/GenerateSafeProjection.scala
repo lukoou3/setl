@@ -99,8 +99,8 @@ object GenerateSafeProjection extends CodeGenerator[Seq[Expression], Projection]
       ctx: CodegenContext,
       input: ExprValue,
       dataType: DataType): ExprCode = dataType match {
-    case s: StructType => createCodeForStruct(ctx, input, s)
-    case ArrayType(elementType, _) => createCodeForArray(ctx, input, elementType)
+    //case s: StructType => createCodeForStruct(ctx, input, s)
+    //case ArrayType(elementType, _) => createCodeForArray(ctx, input, elementType)
     case _ => ExprCode(FalseLiteral, input)
   }
 
