@@ -1,9 +1,44 @@
 package com.lk.setl.sql.catalyst.expressions.aggregate
 
 import com.lk.setl.sql.Row
+import com.lk.setl.sql.catalyst.analysis.UnresolvedAttribute
 import com.lk.setl.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
-import com.lk.setl.sql.catalyst.expressions.{AttributeReference, Expression, Literal, Unevaluable}
+import com.lk.setl.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSet, Expression, Literal, NamedExpression, Unevaluable}
 import com.lk.setl.sql.types._
+
+/** The mode of an [[AggregateFunction]]. */
+sealed trait AggregateMode
+
+/**
+ * An [[AggregateFunction]] with [[Partial]] mode is used for partial aggregation.
+ * This function updates the given aggregation buffer with the original input of this
+ * function. When it has processed all input rows, the aggregation buffer is returned.
+ */
+case object Partial extends AggregateMode
+
+/**
+ * An [[AggregateFunction]] with [[PartialMerge]] mode is used to merge aggregation buffers
+ * containing intermediate results for this function.
+ * This function updates the given aggregation buffer by merging multiple aggregation buffers.
+ * When it has processed all input rows, the aggregation buffer is returned.
+ */
+case object PartialMerge extends AggregateMode
+
+/**
+ * An [[AggregateFunction]] with [[Final]] mode is used to merge aggregation buffers
+ * containing intermediate results for this function and then generate final result.
+ * This function updates the given aggregation buffer by merging multiple aggregation buffers.
+ * When it has processed all input rows, the final result of this function is returned.
+ */
+case object Final extends AggregateMode
+
+/**
+ * An [[AggregateFunction]] with [[Complete]] mode is used to evaluate this function directly
+ * from original input rows without any partial aggregation.
+ * This function updates the given aggregation buffer with the original input of this
+ * function. When it has processed all input rows, the final result of this function is returned.
+ */
+case object Complete extends AggregateMode
 
 /**
  * A place holder expressions used in code-gen, it does not change the corresponding value
@@ -13,6 +48,105 @@ case object NoOp extends Expression with Unevaluable {
   override def nullable: Boolean = true
   override def dataType: DataType = NullType
   override def children: Seq[Expression] = Nil
+}
+
+object AggregateExpression {
+  def apply(
+      aggregateFunction: AggregateFunction,
+      mode: AggregateMode,
+      isDistinct: Boolean,
+      filter: Option[Expression] = None): AggregateExpression = {
+    AggregateExpression(
+      aggregateFunction,
+      mode,
+      isDistinct,
+      filter,
+      NamedExpression.newExprId)
+  }
+}
+
+/**
+ * A container for an [[AggregateFunction]] with its [[AggregateMode]] and a field
+ * (`isDistinct`) indicating if DISTINCT keyword is specified for this function and
+ * a field (`filter`) indicating if filter clause is specified for this function.
+ */
+case class AggregateExpression(
+    aggregateFunction: AggregateFunction,
+    mode: AggregateMode,
+    isDistinct: Boolean,
+    filter: Option[Expression],
+    resultId: Long)
+  extends Expression
+  with Unevaluable {
+
+  @transient
+  lazy val resultAttribute: Attribute = if (aggregateFunction.resolved) {
+    AttributeReference(
+      aggregateFunction.toString,
+      aggregateFunction.dataType,
+      aggregateFunction.nullable)(exprId = resultId)
+  } else {
+    // This is a bit of a hack.  Really we should not be constructing this container and reasoning
+    // about datatypes / aggregation mode until after we have finished analysis and made it to
+    // planning.
+    UnresolvedAttribute(aggregateFunction.toString)
+  }
+
+  def filterAttributes: AttributeSet = filter.map(_.references).getOrElse(AttributeSet.empty)
+
+  // We compute the same thing regardless of our final result.
+  override lazy val canonicalized: Expression = {
+    val normalizedAggFunc = mode match {
+      // For PartialMerge or Final mode, the input to the `aggregateFunction` is aggregate buffers,
+      // and the actual children of `aggregateFunction` is not used, here we normalize the expr id.
+      case PartialMerge | Final => aggregateFunction.transform {
+        case a: AttributeReference => a.withExprId(0)
+      }
+      case Partial | Complete => aggregateFunction
+    }
+
+    AggregateExpression(
+      normalizedAggFunc.canonicalized.asInstanceOf[AggregateFunction],
+      mode,
+      isDistinct,
+      filter.map(_.canonicalized),
+      0)
+  }
+
+  override def children: Seq[Expression] = aggregateFunction +: filter.toSeq
+
+  override def dataType: DataType = aggregateFunction.dataType
+  override def nullable: Boolean = aggregateFunction.nullable
+
+  @transient
+  override lazy val references: AttributeSet = {
+    val aggAttributes = mode match {
+      case Partial | Complete => aggregateFunction.references
+      case PartialMerge | Final => AttributeSet(aggregateFunction.inputAggBufferAttributes)
+    }
+    aggAttributes ++ filterAttributes
+  }
+
+  override def toString: String = {
+    val prefix = mode match {
+      case Partial => "partial_"
+      case PartialMerge => "merge_"
+      case Final | Complete => ""
+    }
+    val aggFuncStr = prefix + aggregateFunction.toAggString(isDistinct)
+    filter match {
+      case Some(predicate) => s"$aggFuncStr FILTER (WHERE $predicate)"
+      case _ => aggFuncStr
+    }
+  }
+
+  override def sql: String = {
+    val aggFuncStr = aggregateFunction.sql(isDistinct)
+    filter match {
+      case Some(predicate) => s"$aggFuncStr FILTER (WHERE ${predicate.sql})"
+      case _ => aggFuncStr
+    }
+  }
 }
 
 /**
@@ -54,6 +188,31 @@ abstract class AggregateFunction extends Expression {
    * Result of the aggregate function when the input is empty.
    */
   def defaultResult: Option[Literal] = None
+
+  /**
+   * Creates [[AggregateExpression]] with `isDistinct` flag disabled.
+   *
+   * @see `toAggregateExpression(isDistinct: Boolean)` for detailed description
+   */
+  def toAggregateExpression(): AggregateExpression = toAggregateExpression(isDistinct = false)
+
+  /**
+   * Wraps this [[AggregateFunction]] in an [[AggregateExpression]] and sets `isDistinct`
+   * flag of the [[AggregateExpression]] to the given value because
+   * [[AggregateExpression]] is the container of an [[AggregateFunction]], aggregation mode,
+   * and the flag indicating if this aggregation is distinct aggregation or not.
+   * An [[AggregateFunction]] should not be used without being wrapped in
+   * an [[AggregateExpression]].
+   */
+  def toAggregateExpression(
+      isDistinct: Boolean,
+      filter: Option[Expression] = None): AggregateExpression = {
+    AggregateExpression(
+      aggregateFunction = this,
+      mode = Complete,
+      isDistinct = isDistinct,
+      filter = filter)
+  }
 
   def sql(isDistinct: Boolean): String = {
     val distinct = if (isDistinct) "DISTINCT " else ""

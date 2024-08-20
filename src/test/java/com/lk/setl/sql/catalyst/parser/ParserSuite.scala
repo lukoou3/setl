@@ -12,6 +12,36 @@ import org.scalatest.funsuite.AnyFunSuite
 
 class ParserSuite extends AnyFunSuite {
 
+  test("parseAggWithGroupBy") {
+    val schema = SqlUtils.parseStructType("id: bigint, name: string, age: int, score: double")
+    val tempViews = Map("tab" -> RelationPlaceholder(schema.toAttributes))
+    val sql = "select id, sum(score) score from tab where id > 10 group by id"
+    val singleStatement = new CatalystSqlParser().parsePlan(sql)
+    println(singleStatement)
+    val tracker = new QueryPlanningTracker
+    val logicalPlan = new QueryExecution(tempViews, singleStatement, tracker)
+    logicalPlan.assertAnalyzed()
+    val analyzed = logicalPlan.analyzed
+    val optimized = logicalPlan.optimizedPlan
+    println(analyzed)
+    println(optimized)
+  }
+
+  test("parseAggGlobal") {
+    val schema = SqlUtils.parseStructType("id: bigint, name: string, age: int, score: double")
+    val tempViews = Map("tab" -> RelationPlaceholder(schema.toAttributes))
+    val sql = "select first(id) id, sum(score) score from tab where id > 10"
+    val singleStatement = new CatalystSqlParser().parsePlan(sql)
+    //println(singleStatement)
+    val tracker = new QueryPlanningTracker
+    val logicalPlan = new QueryExecution(tempViews, singleStatement, tracker)
+    logicalPlan.assertAnalyzed()
+    val analyzed = logicalPlan.analyzed
+    val optimized = logicalPlan.optimizedPlan
+    println(analyzed)
+    println(optimized)
+  }
+
   test("parseLateralView") {
     val schema = SqlUtils.parseStructType("id: bigint, name: string, age: int, datas: array<int>")
     val tempViews = Map("tab" -> RelationPlaceholder(schema.toAttributes))

@@ -2,7 +2,8 @@ package com.lk.setl.sql.catalyst.analysis
 
 import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.catalyst.expressions._
-import com.lk.setl.sql.catalyst.plans.logical.{Filter, LeafNode, LogicalPlan, PlanHelper, Project}
+import com.lk.setl.sql.catalyst.expressions.aggregate.AggregateExpression
+import com.lk.setl.sql.catalyst.plans.logical.{Filter, Aggregate, LogicalPlan, PlanHelper, Project}
 import com.lk.setl.sql.types.BooleanType
 
 trait CheckAnalysis {
@@ -57,6 +58,81 @@ trait CheckAnalysis {
             failAnalysis(
               s"filter expression '${f.condition.sql}' " +
                 s"of type ${f.condition.dataType.catalogString} is not a boolean.")
+
+          // 校验Aggregate计划, 校验groupBy字句和select字句符合规范
+          case Aggregate(groupingExprs, aggregateExprs, child) =>
+            def isAggregateExpression(expr: Expression): Boolean = {
+              expr.isInstanceOf[AggregateExpression]
+            }
+
+            def checkValidAggregateExpression(expr: Expression): Unit = expr match {
+              case expr: Expression if isAggregateExpression(expr) =>
+                val aggFunction = expr match {
+                  case agg: AggregateExpression => agg.aggregateFunction
+                }
+                aggFunction.children.foreach { child =>
+                  child.foreach {
+                    case expr: Expression if isAggregateExpression(expr) =>
+                      failAnalysis(
+                        s"It is not allowed to use an aggregate function in the argument of " +
+                          s"another aggregate function. Please use the inner aggregate function " +
+                          s"in a sub-query.")
+                    case other => // OK
+                  }
+
+                  if (!child.deterministic) {
+                    failAnalysis(
+                      s"nondeterministic expression ${expr.sql} should not " +
+                        s"appear in the arguments of an aggregate function.")
+                  }
+                }
+              case e: Attribute if groupingExprs.isEmpty =>
+                // Collect all [[AggregateExpressions]]s.
+                val aggExprs = aggregateExprs.filter(_.collect {
+                  case a: AggregateExpression => a
+                }.nonEmpty)
+                failAnalysis(
+                  s"grouping expressions sequence is empty, " +
+                    s"and '${e.sql}' is not an aggregate function. " +
+                    s"Wrap '${aggExprs.map(_.sql).mkString("(", ", ", ")")}' in windowing " +
+                    s"function(s) or wrap '${e.sql}' in first() (or first_value) " +
+                    s"if you don't care which value you get."
+                )
+              case e: Attribute if !groupingExprs.exists(_.semanticEquals(e)) =>
+                failAnalysis(
+                  s"expression '${e.sql}' is neither present in the group by, " +
+                    s"nor is it an aggregate function. " +
+                    "Add to group by or wrap in first() (or first_value) if you don't care " +
+                    "which value you get.")
+              case e if groupingExprs.exists(_.semanticEquals(e)) => // OK
+              case e => e.children.foreach(checkValidAggregateExpression)
+            }
+
+            def checkValidGroupingExprs(expr: Expression): Unit = {
+              if (expr.find(_.isInstanceOf[AggregateExpression]).isDefined) {
+                failAnalysis(
+                  "aggregate functions are not allowed in GROUP BY, but found " + expr.sql)
+              }
+
+              // Check if the data type of expr is orderable.
+              if (!RowOrdering.isOrderable(expr.dataType)) {
+                failAnalysis(
+                  s"expression ${expr.sql} cannot be used as a grouping expression " +
+                    s"because its data type ${expr.dataType.catalogString} is not an orderable " +
+                    s"data type.")
+              }
+
+              if (!expr.deterministic) {
+                // This is just a sanity check, our analysis rule PullOutNondeterministic should
+                // already pull out those nondeterministic expressions and evaluate them in
+                // a Project node.
+                failAnalysis(s"nondeterministic expression ${expr.sql} should not " +
+                  s"appear in grouping expression.")
+              }
+            }
+
+            groupingExprs.foreach(checkValidGroupingExprs)
+            aggregateExprs.foreach(checkValidAggregateExpression)
 
           case _ => // Fallbacks to the following checks
         }

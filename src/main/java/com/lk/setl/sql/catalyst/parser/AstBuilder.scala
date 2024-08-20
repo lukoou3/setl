@@ -4,9 +4,10 @@ import com.lk.setl.Logging
 import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.catalyst.analysis._
 import com.lk.setl.sql.catalyst.expressions._
+import com.lk.setl.sql.catalyst.expressions.aggregate.{First, Last}
 import com.lk.setl.sql.catalyst.parser.ParserUtils.{EnhancedLogicalPlan, string, stringWithoutUnescape, withOrigin}
 import com.lk.setl.sql.catalyst.parser.SqlBaseParser._
-import com.lk.setl.sql.catalyst.plans.logical.{Filter, Generate, LogicalPlan, Project}
+import com.lk.setl.sql.catalyst.plans.logical.{Filter, Generate, Aggregate, LogicalPlan, Project}
 import com.lk.setl.sql.types._
 import org.antlr.v4.runtime.ParserRuleContext
 import org.antlr.v4.runtime.tree.{ParseTree, TerminalNode}
@@ -54,10 +55,16 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
       case e: Expression => UnresolvedAlias(e)
     }
 
-    if (namedExpressions.nonEmpty) {
-      Project(namedExpressions, withFilter) // select
+    val aggregationClause = ctx.aggregationClause
+    if (aggregationClause != null) {
+      val aggregate = withAggregationClause(aggregationClause, namedExpressions, withFilter)
+      aggregate
     } else {
-      withFilter
+      if (namedExpressions.nonEmpty) {
+        Project(namedExpressions, withFilter) // select
+      } else {
+        withFilter
+      }
     }
   }
 
@@ -71,6 +78,17 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   override def visitTableName(ctx: TableNameContext): LogicalPlan = withOrigin(ctx) {
     val tableId = visitMultipartIdentifier(ctx.multipartIdentifier)
     UnresolvedRelation(tableId)
+  }
+
+  /**
+   * Add an [[Aggregate]] or [[GroupingSets]] to a logical plan.
+   */
+  private def withAggregationClause(
+      ctx: AggregationClauseContext,
+      selectExpressions: Seq[NamedExpression],
+      query: LogicalPlan): LogicalPlan = withOrigin(ctx) {
+    val groupByExpressions = expressionList(ctx.groupingExpressions)
+    Aggregate(groupByExpressions, selectExpressions, query)
   }
 
   /**
@@ -113,7 +131,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   override def visitNamedExpression(ctx: NamedExpressionContext): Expression = withOrigin(ctx) {
     val e = expression(ctx.expression)
     if(e == null){
-      println(ctx.expression)
+      println(ctx.expression.getText)
+      throw new ParseException(s"can not parse expression '${ctx.expression.getText}'", ctx)
     }
     if (ctx.name != null) {
       Alias(e, ctx.name.getText)()
@@ -372,6 +391,22 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
       /*case SqlBaseParser.TILDE =>
         BitwiseNot(value)*/
     }
+  }
+
+  /**
+   * Create a [[First]] expression.
+   */
+  override def visitFirst(ctx: FirstContext): Expression = withOrigin(ctx) {
+    val ignoreNullsExpr = ctx.IGNORE != null
+    First(expression(ctx.expression), ignoreNullsExpr).toAggregateExpression()
+  }
+
+  /**
+   * Create a [[Last]] expression.
+   */
+  override def visitLast(ctx: LastContext): Expression = withOrigin(ctx) {
+    val ignoreNullsExpr = ctx.IGNORE != null
+    Last(expression(ctx.expression), ignoreNullsExpr).toAggregateExpression()
   }
 
   /**

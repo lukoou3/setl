@@ -24,8 +24,8 @@ object PlanHelper {
     val exprs = plan.expressions
     val invalidExpressions = exprs.flatMap { root =>
       root.collect {
-        /*case e: AggregateFunction
-          if !(plan.isInstanceOf[Aggregate]) => e*/
+        case e: AggregateFunction
+          if !(plan.isInstanceOf[Aggregate]) => e
         case e: Generator
           if !plan.isInstanceOf[Generate] => e
       }

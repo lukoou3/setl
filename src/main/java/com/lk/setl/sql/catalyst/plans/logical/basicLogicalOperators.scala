@@ -1,6 +1,7 @@
 package com.lk.setl.sql.catalyst.plans.logical
 
 import com.lk.setl.sql.catalyst.expressions._
+import com.lk.setl.sql.catalyst.expressions.aggregate.AggregateExpression
 
 case class Project(projectList: Seq[NamedExpression], child: LogicalPlan)
     extends OrderPreservingUnaryNode {
@@ -84,4 +85,35 @@ case class Generate(
   }
 
   def output: Seq[Attribute] = requiredChildOutput ++ qualifiedGeneratorOutput
+}
+
+/**
+ * This is a Group by operator with the aggregate functions and projections.
+ *
+ * @param groupingExpressions expressions for grouping keys
+ * @param aggregateExpressions expressions for a project list, which could contain
+ *                             [[AggregateFunction]]s.
+ *
+ * Note: Currently, aggregateExpressions is the project list of this Group by operator. Before
+ * separating projection from grouping and aggregate, we should avoid expression-level optimization
+ * on aggregateExpressions, which could reference an expression in groupingExpressions.
+ * For example, see the rule [[org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps]]
+ */
+case class Aggregate(
+    groupingExpressions: Seq[Expression],
+    aggregateExpressions: Seq[NamedExpression],
+    child: LogicalPlan)
+  extends UnaryNode {
+
+  override lazy val resolved: Boolean = {
+    val hasWindowExpressions = false
+    !expressions.exists(!_.resolved) && childrenResolved && !hasWindowExpressions
+  }
+
+  override def output: Seq[Attribute] = aggregateExpressions.map(_.toAttribute)
+
+  override lazy val validConstraints: ExpressionSet = {
+    val nonAgg = aggregateExpressions.filter(_.find(_.isInstanceOf[AggregateExpression]).isEmpty)
+    getAllValidConstraints(nonAgg)
+  }
 }

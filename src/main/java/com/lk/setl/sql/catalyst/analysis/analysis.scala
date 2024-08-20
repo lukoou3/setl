@@ -3,7 +3,8 @@ package com.lk.setl.sql.catalyst.analysis
 import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.catalyst.QueryPlanningTracker
 import com.lk.setl.sql.catalyst.expressions._
-import com.lk.setl.sql.catalyst.plans.logical.{AnalysisHelper, Generate, LogicalPlan, Project, RelationPlaceholder}
+import com.lk.setl.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, Complete}
+import com.lk.setl.sql.catalyst.plans.logical.{AnalysisHelper, Aggregate, Generate, LogicalPlan, Project, RelationPlaceholder}
 import com.lk.setl.sql.catalyst.rules.{Rule, RuleExecutor}
 import com.lk.setl.sql.catalyst.util.toPrettySQL
 
@@ -62,6 +63,7 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
       ResolveGenerate ::
       ResolveFunctions ::
       ResolveAliases ::
+      GlobalAggregates ::
       TypeCoercion.typeCoercionRules : _*
     )
   )
@@ -104,6 +106,15 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
             withPosition(u) {
               // 匹配函数
               FunctionRegistry.builtin.lookupFunction(funcId, arguments) match {
+                // 包装AggregateFunction
+                // We get an aggregate function, we need to wrap it in an AggregateExpression.
+                case agg: AggregateFunction =>
+                  if (filter.isDefined && !filter.get.deterministic) {
+                    failAnalysis("FILTER expression is non-deterministic, " +
+                      "it cannot be used in aggregate functions")
+                  }
+                  AggregateExpression(agg, Complete, false, filter)
+                // This function is not an aggregate function, just return the resolved one.
                 case other if filter.isDefined =>
                   throw new AnalysisException("DISTINCT or FILTER specified, " +
                     s"but ${other.prettyName} is not an aggregate function")
@@ -321,6 +332,27 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
           s"output by the UDTF expected ${elementAttrs.size} aliases but got " +
           s"${names.mkString(",")} ")
       }
+    }
+  }
+
+  /**
+   * 将包含聚合表达式的投影转换为聚合。
+   * Turns projections that contain aggregate expressions into aggregations.
+   */
+  object GlobalAggregates extends Rule[LogicalPlan] {
+    def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperators {
+      case Project(projectList, child) if containsAggregates(projectList) =>
+        Aggregate(Nil, projectList, child)
+    }
+
+    def containsAggregates(exprs: Seq[Expression]): Boolean = {
+      // Collect all Windowed Aggregate Expressions.
+      val windowedAggExprs: Set[Expression] = Set()
+
+      // Find the first Aggregate Expression that is not Windowed.
+      exprs.exists(_.collectFirst {
+        case ae: AggregateExpression if !windowedAggExprs.contains(ae) => ae
+      }.isDefined)
     }
   }
 
