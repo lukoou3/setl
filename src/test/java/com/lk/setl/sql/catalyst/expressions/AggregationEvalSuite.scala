@@ -1,13 +1,81 @@
 package com.lk.setl.sql.catalyst.expressions
 
-import com.lk.setl.sql.{GenericRow, JoinedRow, Row}
+import com.lk.setl.sql.{GenericRow, JoinedRow, Row, SqlUtils}
 import com.lk.setl.sql.catalyst.dsl.expressions._
 import com.lk.setl.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, Average, Complete, Count, DeclarativeAggregate, Final, NoOp, Partial, PartialMerge, Sum}
+import com.lk.setl.sql.catalyst.planning.PhysicalAggregation
+import com.lk.setl.sql.catalyst.plans.logical.Aggregate
 import com.lk.setl.sql.types.{IntegerType, LongType}
 import org.scalatest.funsuite.AnyFunSuite
 
 class AggregationEvalSuite extends AnyFunSuite {
   System.setProperty("spark.testing", "true")
+
+  test("parseAgg") {
+    val schema = SqlUtils.parseStructType("type: int, cate: string, bytes: bigint, sessions: bigint")
+    val sql ="""
+    select
+        type, cate, sum(bytes) bytes, sum(bytes) + 2 bytes2, sum(sessions) sessions, avg(bytes) avg_bytes, count(1) cnt
+    from tab
+    group by type, cate
+    """
+    val aggregate = SqlUtils.sqlPlan(sql, schema).asInstanceOf[Aggregate]
+    // 只有一个阶段，不做merge
+    val (groupingExpressions, aggregateExpressions, aggregateAttributes, resultExpressions) =  aggregate match {
+      case PhysicalAggregation(groupingExpressions, aggExpressions, resultExpressions, child) =>
+        val aggregateExpressions: Seq[AggregateExpression] = aggExpressions.map(expr => expr.asInstanceOf[AggregateExpression])
+        val aggregateAttributes = aggregateExpressions.flatMap(_.aggregateFunction.aggBufferAttributes)
+        (groupingExpressions, aggregateExpressions, aggregateAttributes, resultExpressions)
+    }
+    val inputAttributes: Seq[Attribute] = aggregate.child.output
+    val aggregateFunctions: Array[AggregateFunction] = aggregateExpressions.map(_.aggregateFunction).toArray
+    // The projection used to initialize buffer values for all expression-based aggregates.
+    val expressionAggInitialProjection = {
+      val initExpressions = aggregateFunctions.flatMap {
+        case ae: DeclarativeAggregate => ae.initialValues
+        // For the positions corresponding to imperative aggregate functions, we'll use special
+        // no-op expressions which are ignored during projection code-generation.
+      }
+      MutableProjection.create(initExpressions, Nil)
+    }
+    val processRow: (Row, Row) => Unit = generateProcessRow(aggregateExpressions, aggregateFunctions, inputAttributes)
+    val buffer = new GenericRow(new Array[Any](aggregateFunctions.flatMap(_.aggBufferAttributes).length))
+    expressionAggInitialProjection.target(buffer)(EmptyRow)
+
+    val rows = Seq[Row](
+      new GenericRow(Array(1, "a", 10L, 1L)),
+      new GenericRow(Array(1, "a", 20L, 2L)),
+      new GenericRow(Array(1, "a", 30L, 2L)),
+      new GenericRow(Array(1, "a", 5L, 3L))
+    )
+
+    rows.foreach{ newInput =>
+      processRow(buffer, newInput)
+      println(buffer)
+    }
+
+    val evalExpressions = aggregateFunctions.map {
+      case ae: DeclarativeAggregate => ae.evaluateExpression
+      case agg: AggregateFunction => NoOp // 占位符，不生成代码
+    }
+
+    val bufferAttributes = aggregateFunctions.flatMap(_.aggBufferAttributes)
+    val aggregateResult = new GenericRow(new Array[Any](evalExpressions.length))
+    val expressionAggEvalProjection =  MutableProjection.create(evalExpressions, bufferAttributes)
+    expressionAggEvalProjection.target(aggregateResult) // expressionAggEvalProjection更新aggregateResult
+    expressionAggEvalProjection(buffer)
+
+    println(aggregateResult)
+
+    val groupingAttributes = groupingExpressions.map(_.toAttribute)
+    val finalAggregateAttributes = aggregateExpressions.map(_.resultAttribute)
+    val resultProjection = SafeProjection.create(resultExpressions, groupingAttributes ++ finalAggregateAttributes)
+    // 就是把key和聚合值合在一起输出
+    val joinedRow = new JoinedRow
+    val currentGroupingKey = new GenericRow(Array[Any](1, "a"))
+    val rst = resultProjection(joinedRow(currentGroupingKey, aggregateResult))
+    println(rst)
+  }
 
   test("agg") {
     val inputs = Seq(AttributeReference("id", IntegerType)(), AttributeReference("bytes", LongType)(), AttributeReference("sessions", LongType)())
