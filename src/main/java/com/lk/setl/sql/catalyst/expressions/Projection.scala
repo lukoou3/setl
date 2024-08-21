@@ -2,7 +2,7 @@ package com.lk.setl.sql.catalyst.expressions
 
 import com.lk.setl.sql.{GenericRow, Row}
 import com.lk.setl.sql.catalyst.expressions.BindReferences.bindReferences
-import com.lk.setl.sql.catalyst.expressions.codegen.GenerateSafeProjection
+import com.lk.setl.sql.catalyst.expressions.codegen.{GenerateMutableProjection, GenerateSafeProjection}
 import com.lk.setl.sql.types.{DataType, StructType}
 
 /**
@@ -76,6 +76,55 @@ object SafeProjection extends CodeGeneratorWithInterpretedFallback[Seq[Expressio
    * `inputSchema`.
    */
   def create(exprs: Seq[Expression], inputSchema: Seq[Attribute]): Projection = {
+    create(bindReferences(exprs, inputSchema))
+  }
+}
+
+/**
+ * 主要聚合函数中更新buffer
+ * Converts a [[Row]] to another Row given a sequence of expression that define each
+ * column of the new row. If the schema of the input row is specified, then the given expression
+ * will be bound to that schema.
+ *
+ * In contrast to a normal projection, a MutableProjection reuses the same underlying row object
+ * each time an input row is added.  This significantly reduces the cost of calculating the
+ * projection, but means that it is not safe to hold on to a reference to a [[Row]] after
+ * `next()` has been called on the [[Iterator]] that produced it. Instead, the user must call
+ * `InternalRow.copy()` and hold on to the returned [[Row]] before calling `next()`.
+ */
+abstract class MutableProjection extends Projection {
+  def currentValue: Row
+
+  /** Uses the given row to store the output of the projection. */
+  def target(row:Row): MutableProjection
+}
+
+/**
+ * The factory object for `MutableProjection`.
+ */
+object MutableProjection
+    extends CodeGeneratorWithInterpretedFallback[Seq[Expression], MutableProjection] {
+
+  override protected def createCodeGeneratedObject(in: Seq[Expression]): MutableProjection = {
+    GenerateMutableProjection.generate(in, true)
+  }
+
+  override protected def createInterpretedObject(in: Seq[Expression]): MutableProjection = {
+    InterpretedMutableProjection.createProjection(in)
+  }
+
+  /**
+   * Returns a MutableProjection for given sequence of bound Expressions.
+   */
+  def create(exprs: Seq[Expression]): MutableProjection = {
+    createObject(exprs)
+  }
+
+  /**
+   * Returns a MutableProjection for given sequence of Expressions, which will be bound to
+   * `inputSchema`.
+   */
+  def create(exprs: Seq[Expression], inputSchema: Seq[Attribute]): MutableProjection = {
     create(bindReferences(exprs, inputSchema))
   }
 }
