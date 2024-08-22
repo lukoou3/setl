@@ -1,15 +1,19 @@
 package com.lk.setl.sql.catalyst.expressions
 
 import com.lk.setl.sql.AnalysisException
+import com.lk.setl.sql.catalyst.expressions.TimeWindowAssigner.parseExpression
 import com.lk.setl.sql.types._
 
-abstract class TimeWindow extends LeafExpression with Unevaluable {
-  override def dataType: DataType = new StructType()
-    .add(StructField("start", LongType))
-    .add(StructField("end", LongType))
+abstract class TimeWindowAssigner extends LeafExpression with Unevaluable {
+  override def dataType: DataType = LongType
+
+  def windowSchema: StructType = new StructType() .add(StructField("window_start", LongType)) .add(StructField("window_end", LongType))
 
   override def nullable: Boolean = false
 
+}
+
+object TimeWindowAssigner{
   def parseExpression(expr: Expression): Long = expr match {
     case IntegerLiteral(i) => i.toLong
     case NonNullLiteral(l, LongType) => l.toString.toLong
@@ -22,7 +26,7 @@ case class ProcessTimeWindow(
   size: Long,
   slide: Long,
   offset: Long
-) extends TimeWindow {
+) extends TimeWindowAssigner {
 
   def this(size: Expression, slide: Expression, offset: Expression) = {
     this(parseExpression(size), parseExpression(slide), parseExpression(offset))
@@ -42,7 +46,7 @@ case class EventTimeWindow(
   size: Long,
   slide: Long,
   offset: Long
-) extends TimeWindow {
+) extends TimeWindowAssigner {
 
   def this(size: Expression, slide: Expression, offset: Expression) = {
     this(parseExpression(size), parseExpression(slide), parseExpression(offset))

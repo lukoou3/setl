@@ -3,7 +3,7 @@ package com.lk.setl.sql.catalyst.analysis
 import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.catalyst.expressions._
 import com.lk.setl.sql.catalyst.expressions.aggregate.AggregateExpression
-import com.lk.setl.sql.catalyst.plans.logical.{Filter, Aggregate, LogicalPlan, PlanHelper, Project}
+import com.lk.setl.sql.catalyst.plans.logical.{Aggregate, Filter, LogicalPlan, PlanHelper, Project, TimeWindow}
 import com.lk.setl.sql.types.BooleanType
 
 trait CheckAnalysis {
@@ -65,7 +65,7 @@ trait CheckAnalysis {
               expr.isInstanceOf[AggregateExpression]
             }
 
-            def checkValidAggregateExpression(expr: Expression): Unit = expr match {
+            def checkValidAggregateExpression(expr: Expression, timeWindowAttributes: Seq[Attribute]): Unit = expr match {
               case expr: Expression if isAggregateExpression(expr) =>
                 val aggFunction = expr match {
                   case agg: AggregateExpression => agg.aggregateFunction
@@ -77,6 +77,8 @@ trait CheckAnalysis {
                         s"It is not allowed to use an aggregate function in the argument of " +
                           s"another aggregate function. Please use the inner aggregate function " +
                           s"in a sub-query.")
+                    case e: Attribute if timeWindowAttributes.exists(_.semanticEquals(e)) =>
+                      failAnalysis(s"time window column($e) can not in aggregate function")
                     case other => // OK
                   }
 
@@ -86,7 +88,7 @@ trait CheckAnalysis {
                         s"appear in the arguments of an aggregate function.")
                   }
                 }
-              case e: Attribute if groupingExprs.isEmpty =>
+              case e: Attribute if groupingExprs.isEmpty && !timeWindowAttributes.exists(_.semanticEquals(e)) =>
                 // Collect all [[AggregateExpressions]]s.
                 val aggExprs = aggregateExprs.filter(_.collect {
                   case a: AggregateExpression => a
@@ -98,14 +100,14 @@ trait CheckAnalysis {
                     s"function(s) or wrap '${e.sql}' in first() (or first_value) " +
                     s"if you don't care which value you get."
                 )
-              case e: Attribute if !groupingExprs.exists(_.semanticEquals(e)) =>
+              case e: Attribute if !groupingExprs.exists(_.semanticEquals(e)) && !timeWindowAttributes.exists(_.semanticEquals(e)) =>
                 failAnalysis(
                   s"expression '${e.sql}' is neither present in the group by, " +
                     s"nor is it an aggregate function. " +
                     "Add to group by or wrap in first() (or first_value) if you don't care " +
                     "which value you get.")
               case e if groupingExprs.exists(_.semanticEquals(e)) => // OK
-              case e => e.children.foreach(checkValidAggregateExpression)
+              case e => e.children.foreach(checkValidAggregateExpression(_, timeWindowAttributes))
             }
 
             def checkValidGroupingExprs(expr: Expression): Unit = {
@@ -131,8 +133,13 @@ trait CheckAnalysis {
               }
             }
 
+            val timeWindowAttributes = child match {
+              case w: TimeWindow => w.windowAttributes
+              case _ => Seq.empty
+            }
+
             groupingExprs.foreach(checkValidGroupingExprs)
-            aggregateExprs.foreach(checkValidAggregateExpression)
+            aggregateExprs.foreach(checkValidAggregateExpression(_, timeWindowAttributes))
 
           case _ => // Fallbacks to the following checks
         }

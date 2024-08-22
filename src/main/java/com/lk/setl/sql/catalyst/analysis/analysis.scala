@@ -4,7 +4,8 @@ import com.lk.setl.sql.AnalysisException
 import com.lk.setl.sql.catalyst.QueryPlanningTracker
 import com.lk.setl.sql.catalyst.expressions._
 import com.lk.setl.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, Complete}
-import com.lk.setl.sql.catalyst.plans.logical.{AnalysisHelper, Aggregate, Generate, LogicalPlan, Project, RelationPlaceholder}
+import com.lk.setl.sql.catalyst.plans.logical
+import com.lk.setl.sql.catalyst.plans.logical.{Aggregate, AnalysisHelper, Generate, LogicalPlan, Project, RelationPlaceholder, TimeWindow}
 import com.lk.setl.sql.catalyst.rules.{Rule, RuleExecutor}
 import com.lk.setl.sql.catalyst.util.toPrettySQL
 
@@ -64,6 +65,7 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
       ResolveFunctions ::
       ResolveAliases ::
       GlobalAggregates ::
+      TimeWindowing ::
       TypeCoercion.typeCoercionRules : _*
     )
   )
@@ -358,4 +360,19 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
 
 }
 
-
+object TimeWindowing extends Rule[LogicalPlan] {
+  override def apply(plan: LogicalPlan): LogicalPlan = plan.transformUp {
+    case a @ Aggregate(groupingExprs, aggregateExprs, child) =>
+      val windowExpressions = groupingExprs.collect { case t: TimeWindowAssigner => t }
+      val numWindowExpr = windowExpressions.size
+      if (numWindowExpr == 1){
+        val groupNoWindowExprs = groupingExprs.filterNot(_.isInstanceOf[TimeWindowAssigner])
+        val windowAssigner = windowExpressions.head
+        Aggregate(groupNoWindowExprs, aggregateExprs, TimeWindow(windowAssigner, windowAssigner.windowSchema.toAttributes, child))
+      } else if (numWindowExpr > 1) {
+        a.failAnalysis("multiple time window expressions not supported.")
+      }else{
+        a
+      }
+  }
+}

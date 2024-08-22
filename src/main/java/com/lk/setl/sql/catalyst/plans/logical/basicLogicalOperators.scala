@@ -117,3 +117,9 @@ case class Aggregate(
     getAllValidConstraints(nonAgg)
   }
 }
+
+case class TimeWindow(windowAssigner: TimeWindowAssigner, windowAttributes: Seq[Attribute], child: LogicalPlan) extends UnaryNode {
+  override lazy val resolved: Boolean = childrenResolved && windowAttributes.forall(_.resolved)
+  override def producedAttributes: AttributeSet = AttributeSet(windowAttributes)
+  override def output: Seq[Attribute] = child.output ++ windowAttributes
+}
