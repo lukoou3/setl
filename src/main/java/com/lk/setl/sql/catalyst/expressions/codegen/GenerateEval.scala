@@ -1,13 +1,6 @@
 package com.lk.setl.sql.catalyst.expressions.codegen
 
-import com.lk.setl.sql.Row
-import com.lk.setl.sql.catalyst.expressions.{Attribute, BindReferences, Expression}
-
-abstract class BaseEval {
-  def eval(r: Row): Object
-
-  def initialize(partitionIndex: Int): Unit = {}
-}
+import com.lk.setl.sql.catalyst.expressions.{Attribute, BaseEval, BindReferences, Expression}
 
 object GenerateEval extends CodeGenerator[Expression, BaseEval] {
   protected def canonicalize(in: Expression): Expression =

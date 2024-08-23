@@ -28,6 +28,12 @@ case class Filter(condition: Expression, child: LogicalPlan)
   }
 }
 
+case class Expr(expression: NamedExpression, child: LogicalPlan) extends OrderPreservingUnaryNode{
+  override def output: Seq[Attribute] = Seq(expression.toAttribute)
+
+  override protected lazy val validConstraints: ExpressionSet = getAllValidConstraints(Seq(expression))
+}
+
 /**
  * Applies a [[Generator]] to a stream of input rows, combining the
  * output of each into a new stream of rows.  This operation is similar to a `flatMap` in functional

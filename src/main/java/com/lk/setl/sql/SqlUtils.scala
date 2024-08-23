@@ -5,8 +5,9 @@ import com.lk.setl.Logging
 import scala.collection.JavaConverters._
 import com.lk.setl.sql.catalyst.QueryPlanningTracker
 import com.lk.setl.sql.catalyst.execution.QueryExecution
+import com.lk.setl.sql.catalyst.expressions.{Alias, NamedExpression}
 import com.lk.setl.sql.catalyst.parser.CatalystSqlParser
-import com.lk.setl.sql.catalyst.plans.logical.{Filter, LogicalPlan, RelationPlaceholder}
+import com.lk.setl.sql.catalyst.plans.logical.{Expr, Filter, LogicalPlan, RelationPlaceholder}
 import com.lk.setl.sql.types.{DataType, StructType}
 
 import java.util.regex.{Matcher, Pattern}
@@ -51,6 +52,22 @@ object SqlUtils extends Logging {
     val filter = logicalPlan.optimizedPlan.asInstanceOf[Filter]
     filter
   }
+  def parseExpr(sql: String, schema: StructType): Expr = {
+    val tracker = new QueryPlanningTracker
+    val expression = tracker.measurePhase(QueryPlanningTracker.PARSING) {
+      sqlParser.parseExpression(sql)
+    }
+    val e = expression match {
+      case n: NamedExpression => n
+      case _ => Alias(expression, "v")()
+    }
+    val plan = Expr(e, RelationPlaceholder(schema.toAttributes))
+    val logicalPlan = new QueryExecution(Map.empty, plan, tracker)
+    val eval = logicalPlan.optimizedPlan.asInstanceOf[Expr]
+    eval
+  }
+
+
 
   def parseDataType(sql: String): DataType = sqlParser.parseDataType(sql)
 

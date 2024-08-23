@@ -357,6 +357,7 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
         } else {
           values(i) = elementCast(array.get(i))
         }
+        i += 1
       }
       new GenericArrayData(values)
     })
