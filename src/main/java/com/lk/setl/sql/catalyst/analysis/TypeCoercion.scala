@@ -370,10 +370,14 @@ object TypeCoercion {
         case (_: NumericType, target: NumericType) => target
 
         // Implicit cast between date time types
+        case (DateType, TimestampType) => TimestampType
+        case (TimestampType, DateType) => DateType
 
         // string类型可以隐士转换成这么多类型
         // Implicit cast from/to string
         case (StringType, target: NumericType) => target
+        case (StringType, DateType) => DateType
+        case (StringType, TimestampType) => TimestampType
         case (StringType, BinaryType) => BinaryType
         // Cast any atomic type to string.
         case (any: AtomicType, StringType) if any != StringType => StringType

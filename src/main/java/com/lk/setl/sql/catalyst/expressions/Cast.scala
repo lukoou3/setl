@@ -5,10 +5,15 @@ import com.lk.setl.sql.{ArrayData, GenericArrayData, GenericRow, Row}
 import com.lk.setl.sql.catalyst.analysis.{TypeCheckResult, TypeCoercion}
 import com.lk.setl.sql.catalyst.expressions.codegen._
 import com.lk.setl.sql.catalyst.expressions.codegen.Block._
+import com.lk.setl.sql.catalyst.util.DateTimeConstants._
+import com.lk.setl.sql.catalyst.util.DateTimeUtils._
+import com.lk.setl.sql.catalyst.util.DateTimeUtils
 import com.lk.setl.sql.catalyst.util._
 import com.lk.setl.sql.types._
 
 import java.nio.charset.StandardCharsets
+import java.time.ZoneId
+import java.util.concurrent.TimeUnit.SECONDS
 
 object Cast {
 
@@ -26,11 +31,24 @@ object Cast {
     case (_: IntegralType, BinaryType) => true
 
     case (StringType, BooleanType) => true
+    case (DateType, BooleanType) => true
+    case (TimestampType, BooleanType) => true
     case (_: NumericType, BooleanType) => true
 
+    case (StringType, TimestampType) => true
+    case (BooleanType, TimestampType) => true
+    case (DateType, TimestampType) => true
+    case (_: NumericType, TimestampType) => true
+
+    case (StringType, DateType) => true
+    case (TimestampType, DateType) => true
+
+    case (StringType, CalendarIntervalType) => true
 
     case (StringType, _: NumericType) => true
     case (BooleanType, _: NumericType) => true
+    case (DateType, _: NumericType) => true
+    case (TimestampType, _: NumericType) => true
     case (_: NumericType, _: NumericType) => true
 
     case (ArrayType(fromType, fn), ArrayType(toType, tn)) =>
@@ -48,6 +66,29 @@ object Cast {
   }
 
   /**
+   * Return true if we need to use the `timeZone` information casting `from` type to `to` type.
+   * The patterns matched reflect the current implementation in the Cast node.
+   * c.f. usage of `timeZone` in:
+   * * Cast.castToString
+   * * Cast.castToDate
+   * * Cast.castToTimestamp
+   */
+  def needsTimeZone(from: DataType, to: DataType): Boolean = (from, to) match {
+    case (StringType, TimestampType | DateType) => true
+    case (TimestampType | DateType, StringType) => true
+    case (DateType, TimestampType) => true
+    case (TimestampType, DateType) => true
+    case (ArrayType(fromType, _), ArrayType(toType, _)) => needsTimeZone(fromType, toType)
+    case (StructType(fromFields), StructType(toFields)) =>
+      fromFields.length == toFields.length &&
+        fromFields.zip(toFields).exists {
+          case (fromField, toField) =>
+            needsTimeZone(fromField.dataType, toField.dataType)
+        }
+    case _ => false
+  }
+
+  /**
    * 如果我们可以安全地将from类型向上转换为to类型，而不会发生任何截断、精度损失或可能的运行时故障，则返回true。
    * 例如，long->int、string->int都不是向上转换的。
    * Returns true iff we can safely up-cast the `from` type to `to` type without any truncating or
@@ -57,8 +98,15 @@ object Cast {
   def canUpCast(from: DataType, to: DataType): Boolean = (from, to) match {
     case _ if from == to => true
     case (f, t) if legalNumericPrecedence(f, t) => true
+    case (DateType, TimestampType) => true
     case (_: AtomicType, StringType) => true
+    case (_: CalendarIntervalType, StringType) => true
     case (NullType, _) => true
+
+    // Spark supports casting between long and timestamp, please see `longToTimestamp` and
+    // `timestampToLong` for details.
+    case (TimestampType, LongType) => true
+    case (LongType, TimestampType) => true
 
     case (ArrayType(fromType, fn), ArrayType(toType, tn)) =>
       resolvableNullability(fn, tn) && canUpCast(fromType, toType)
@@ -84,6 +132,9 @@ object Cast {
     case (NullType, _) => true
     case (_: NumericType, _: NumericType) => true
     case (_: AtomicType, StringType) => true
+    case (_: CalendarIntervalType, StringType) => true
+    case (DateType, TimestampType) => true
+    case (TimestampType, DateType) => true
 
     case (ArrayType(fromType, fn), ArrayType(toType, tn)) =>
       resolvableNullability(fn, tn) && canANSIStoreAssign(fromType, toType)
@@ -119,6 +170,13 @@ object Cast {
     case (StringType, _) => true
     case (_, StringType) => false
 
+    case (FloatType | DoubleType, TimestampType) => true
+    case (TimestampType, DateType) => false
+    case (_, DateType) => true
+    case (DateType, TimestampType) => false
+    case (DateType, _) => true
+    case (_, CalendarIntervalType) => true
+
     case (_: FractionalType, _: IntegralType) => true  // NaN, infinity
     case _ => false
   }
@@ -142,7 +200,7 @@ object Cast {
   }
 }
 
-abstract class CastBase extends UnaryExpression with NullIntolerant {
+abstract class CastBase extends UnaryExpression with TimeZoneAwareExpression with NullIntolerant {
 
   def child: Expression
 
@@ -178,10 +236,15 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
   // When this cast involves TimeZone, it's only resolved if the timeZoneId is set;
   // Otherwise behave like Expression.resolved.
   override lazy val resolved: Boolean =
-    childrenResolved && checkInputDataTypes().isSuccess // && (!needsTimeZone)
+    childrenResolved && checkInputDataTypes().isSuccess && (!needsTimeZone || timeZoneId.isDefined)
+
+  def needsTimeZone: Boolean = Cast.needsTimeZone(child.dataType, dataType)
 
   // [[func]] assumes the input is no longer null because eval already does the null check.
   @inline private[this] def buildCast[T](a: Any, func: T => Any): Any = func(a.asInstanceOf[T])
+
+  private lazy val dateFormatter = DateFormatter(zoneId)
+  private lazy val timestampFormatter = TimestampFormatter.getFractionFormatter(zoneId)
 
   private val legacyCastToStr = false // SQLConf.get.getConf(SQLConf.LEGACY_COMPLEX_TYPES_TO_STRING)
   // The brackets that are used in casting structs and maps to strings
@@ -190,6 +253,8 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
   // UDFToString
   private[this] def castToString(from: DataType): Any => Any = from match {
     case BinaryType => b => new String(b.asInstanceOf[Array[Byte]], StandardCharsets.UTF_8)
+    case DateType => buildCast[Int](_, d => dateFormatter.format(d))
+    case TimestampType => buildCast[Long](_, t => timestampFormatter.format(t))
     case ArrayType(et, _) =>
       buildCast[ArrayData](_, array => {
         val builder = new java.lang.StringBuilder
@@ -265,6 +330,11 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
           null
         }
       })
+    case TimestampType =>
+      buildCast[Long](_, t => t != 0)
+    case DateType =>
+      // Hive would return null when cast from date to boolean
+      buildCast[Int](_, d => null)
     case LongType =>
       buildCast[Long](_, _ != 0)
     case IntegerType =>
@@ -275,6 +345,63 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
       buildCast[Float](_, _ != 0)
   }
 
+  // TimestampConverter
+  private[this] def castToTimestamp(from: DataType): Any => Any = from match {
+    case StringType =>
+      buildCast[String](_, utfs => {
+        if (ansiEnabled) {
+          DateTimeUtils.stringToTimestampAnsi(utfs, zoneId)
+        } else {
+          DateTimeUtils.stringToTimestamp(utfs, zoneId).orNull
+        }
+      })
+    case BooleanType =>
+      buildCast[Boolean](_, b => if (b) 1L else 0)
+    case LongType =>
+      buildCast[Long](_, l => longToTimestamp(l))
+    case IntegerType =>
+      buildCast[Int](_, i => longToTimestamp(i.toLong))
+    case DateType =>
+      buildCast[Int](_, d => daysToMicros(d, zoneId))
+    // TimestampWritable.doubleToTimestamp
+    case DoubleType =>
+      buildCast[Double](_, d => doubleToTimestamp(d))
+    // TimestampWritable.floatToTimestamp
+    case FloatType =>
+      buildCast[Float](_, f => doubleToTimestamp(f.toDouble))
+  }
+
+  private[this] def doubleToTimestamp(d: Double): Any = {
+    if (d.isNaN || d.isInfinite) null else (d * MICROS_PER_SECOND).toLong
+  }
+
+  // converting seconds to us
+  private[this] def longToTimestamp(t: Long): Long = SECONDS.toMicros(t)
+  // converting us to seconds
+  private[this] def timestampToLong(ts: Long): Long = {
+    Math.floorDiv(ts, MICROS_PER_SECOND)
+  }
+  // converting us to seconds in double
+  private[this] def timestampToDouble(ts: Long): Double = {
+    ts / MICROS_PER_SECOND.toDouble
+  }
+
+  // DateConverter
+  private[this] def castToDate(from: DataType): Any => Any = from match {
+    case StringType =>
+      buildCast[String](_, s => DateTimeUtils.stringToDate(s, zoneId).orNull)
+    case TimestampType =>
+      // throw valid precision more than seconds, according to Hive.
+      // Timestamp.nanos is in 0 to 999,999,999, no more than a second.
+      buildCast[Long](_, t => microsToDays(t, zoneId))
+  }
+
+  // IntervalConverter
+  private[this] def castToInterval(from: DataType): Any => Any = from match {
+    case StringType =>
+      buildCast[String](_, s => IntervalUtils.safeStringToInterval(s))
+  }
+
   // LongConverter
   private[this] def castToLong(from: DataType): Any => Any = from match {
     case StringType if ansiEnabled =>
@@ -283,6 +410,10 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
       buildCast[String](_, java.lang.Long.parseLong)
     case BooleanType =>
       buildCast[Boolean](_, b => if (b) 1L else 0L)
+    case DateType =>
+      buildCast[Int](_, d => null)
+    case TimestampType =>
+      buildCast[Long](_, t => timestampToLong(t))
     case x: NumericType if ansiEnabled =>
       b => x.exactNumeric.asInstanceOf[Numeric[Any]].toLong(b)
     case x: NumericType =>
@@ -297,6 +428,10 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
       buildCast[String](_, java.lang.Integer.parseInt)
     case BooleanType =>
       buildCast[Boolean](_, b => if (b) 1 else 0)
+    case DateType =>
+      buildCast[Int](_, d => null)
+    case TimestampType =>
+      buildCast[Long](_, t => timestampToLong(t).toInt)
     case x: NumericType if ansiEnabled =>
       b => x.exactNumeric.asInstanceOf[Numeric[Any]].toInt(b)
     case x: NumericType =>
@@ -320,6 +455,10 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
       })
     case BooleanType =>
       buildCast[Boolean](_, b => if (b) 1d else 0d)
+    case DateType =>
+      buildCast[Int](_, d => null)
+    case TimestampType =>
+      buildCast[Long](_, t => timestampToDouble(t))
     case x: NumericType =>
       b => x.numeric.asInstanceOf[Numeric[Any]].toDouble(b)
   }
@@ -341,6 +480,10 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
       })
     case BooleanType =>
       buildCast[Boolean](_, b => if (b) 1f else 0f)
+    case DateType =>
+      buildCast[Int](_, d => null)
+    case TimestampType =>
+      buildCast[Long](_, t => timestampToDouble(t).toFloat)
     case x: NumericType =>
       b => x.numeric.asInstanceOf[Numeric[Any]].toFloat(b)
   }
@@ -398,6 +541,9 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
         case dt if dt == from => identity[Any]
         case StringType => castToString(from)
         case BinaryType => castToBinary(from)
+        case DateType => castToDate(from)
+        case TimestampType => castToTimestamp(from)
+        case CalendarIntervalType => castToInterval(from)
         case BooleanType => castToBoolean(from)
         case IntegerType => castToInt(from)
         case FloatType => castToFloat(from)
@@ -447,6 +593,9 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
     case _ if to == from => (c, evPrim, evNull) => code"$evPrim = $c;"
     case StringType => castToStringCode(from, ctx)
     case BinaryType => castToBinaryCode(from)
+    case DateType => castToDateCode(from, ctx)
+    case TimestampType => castToTimestampCode(from, ctx)
+    case CalendarIntervalType => castToIntervalCode(from)
     case BooleanType => castToBooleanCode(from)
     case IntegerType => castToIntCode(from, ctx)
     case FloatType => castToFloatCode(from, ctx)
@@ -622,6 +771,18 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
     from match {
       case BinaryType =>
         (c, evPrim, evNull) => code"$evPrim = new String($c, java.nio.charset.StandardCharsets.UTF_8);"
+      case DateType =>
+        val df = JavaCode.global(
+          ctx.addReferenceObj("dateFormatter", dateFormatter),
+          dateFormatter.getClass)
+        (c, evPrim, evNull) => code"""$evPrim = $df.format($c);"""
+      case TimestampType =>
+        val tf = JavaCode.global(
+          ctx.addReferenceObj("timestampFormatter", timestampFormatter),
+          timestampFormatter.getClass)
+        (c, evPrim, evNull) => code"""$evPrim = $tf.format($c);"""
+      case CalendarIntervalType =>
+        (c, evPrim, _) => code"""$evPrim = $c.toString();"""
       case ArrayType(et, _) =>
         (c, evPrim, evNull) => {
           val buffer = ctx.freshVariable("buffer", classOf[java.lang.StringBuilder])
@@ -660,6 +821,118 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
         code"$evPrim = ${NumberConverter.getClass.getName.stripSuffix("$")}.toBinary($c);"
   }
 
+  private[this] def castToDateCode(
+      from: DataType,
+      ctx: CodegenContext): CastFunction = {
+    def getZoneId() = {
+      val zoneIdClass = classOf[ZoneId]
+      JavaCode.global(
+        ctx.addReferenceObj("zoneId", zoneId, zoneIdClass.getName),
+        zoneIdClass)
+    }
+    val DateTimeUtilsClass = DateTimeUtils.getClass.getName.stripSuffix("$")
+    from match {
+      case StringType =>
+        val intOpt = ctx.freshVariable("intOpt", classOf[Option[Integer]])
+        val zid = getZoneId()
+        (c, evPrim, evNull) =>
+          code"""
+          scala.Option<Integer> $intOpt =
+            ${DateTimeUtilsClass}.stringToDate($c, $zid);
+          if ($intOpt.isDefined()) {
+            $evPrim = ((Integer) $intOpt.get()).intValue();
+          } else {
+            $evNull = true;
+          }
+         """
+      case TimestampType =>
+        val zid = getZoneId()
+        (c, evPrim, evNull) =>
+          code"""$evPrim =
+            ${DateTimeUtilsClass}.microsToDays($c, $zid);"""
+      case _ =>
+        (c, evPrim, evNull) => code"$evNull = true;"
+    }
+  }
+
+  private[this] def castToTimestampCode(
+      from: DataType,
+      ctx: CodegenContext): CastFunction = from match {
+    case StringType =>
+      val zoneIdClass = classOf[ZoneId]
+      val zid = JavaCode.global(
+        ctx.addReferenceObj("zoneId", zoneId, zoneIdClass.getName),
+        zoneIdClass)
+      val DateTimeUtilsClass = DateTimeUtils.getClass.getName.stripSuffix("$")
+      val longOpt = ctx.freshVariable("longOpt", classOf[Option[Long]])
+      (c, evPrim, evNull) =>
+        if (ansiEnabled) {
+          code"""
+            $evPrim =
+              ${DateTimeUtilsClass}.stringToTimestampAnsi($c, $zid);
+           """
+        } else {
+          code"""
+            scala.Option<Long> $longOpt =
+              ${DateTimeUtilsClass}.stringToTimestamp($c, $zid);
+            if ($longOpt.isDefined()) {
+              $evPrim = ((Long) $longOpt.get()).longValue();
+            } else {
+              $evNull = true;
+            }
+           """
+        }
+    case BooleanType =>
+      (c, evPrim, evNull) => code"$evPrim = $c ? 1L : 0L;"
+    case _: IntegralType =>
+      (c, evPrim, evNull) => code"$evPrim = ${longToTimeStampCode(c)};"
+    case DateType =>
+      val zoneIdClass = classOf[ZoneId]
+      val DateTimeUtilsClass = DateTimeUtils.getClass.getName.stripSuffix("$")
+      val zid = JavaCode.global(
+        ctx.addReferenceObj("zoneId", zoneId, zoneIdClass.getName),
+        zoneIdClass)
+      (c, evPrim, evNull) =>
+        code"""$evPrim =
+          ${DateTimeUtilsClass}.daysToMicros($c, $zid);"""
+    case DoubleType =>
+      (c, evPrim, evNull) =>
+        code"""
+          if (Double.isNaN($c) || Double.isInfinite($c)) {
+            $evNull = true;
+          } else {
+            $evPrim = (long)($c * $MICROS_PER_SECOND);
+          }
+        """
+    case FloatType =>
+      (c, evPrim, evNull) =>
+        code"""
+          if (Float.isNaN($c) || Float.isInfinite($c)) {
+            $evNull = true;
+          } else {
+            $evPrim = (long)((double)$c * $MICROS_PER_SECOND);
+          }
+        """
+  }
+
+  private[this] def castToIntervalCode(from: DataType): CastFunction = from match {
+    case StringType =>
+      val util = IntervalUtils.getClass.getCanonicalName.stripSuffix("$")
+      (c, evPrim, evNull) =>
+        code"""$evPrim = $util.safeStringToInterval($c);
+           if(${evPrim} == null) {
+             ${evNull} = true;
+           }
+         """.stripMargin
+
+  }
+
+  private[this] def longToTimeStampCode(l: ExprValue): Block = code"$l * (long)$MICROS_PER_SECOND"
+  private[this] def timestampToLongCode(ts: ExprValue): Block =
+    code"java.lang.Math.floorDiv($ts, $MICROS_PER_SECOND)"
+  private[this] def timestampToDoubleCode(ts: ExprValue): Block =
+    code"$ts / (double)$MICROS_PER_SECOND"
+
   private[this] def castToBooleanCode(from: DataType): CastFunction = from match {
     case StringType =>
       val stringUtils = inline"${StringUtils.getClass.getName.stripSuffix("$")}"
@@ -673,8 +946,32 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
             $evNull = true;
           }
         """
+    case TimestampType =>
+      (c, evPrim, evNull) => code"$evPrim = $c != 0;"
+    case DateType =>
+      // Hive would return null when cast from date to boolean
+      (c, evPrim, evNull) => code"$evNull = true;"
     case n: NumericType =>
       (c, evPrim, evNull) => code"$evPrim = $c != 0;"
+  }
+
+  private[this] def castTimestampToIntegralTypeCode(
+      ctx: CodegenContext,
+      integralType: String): CastFunction = {
+    if (ansiEnabled) {
+      val longValue = ctx.freshName("longValue")
+      (c, evPrim, evNull) =>
+        code"""
+          long $longValue = ${timestampToLongCode(c)};
+          if ($longValue == ($integralType) $longValue) {
+            $evPrim = ($integralType) $longValue;
+          } else {
+            throw new ArithmeticException("Casting " + $c + " to $integralType causes overflow");
+          }
+        """
+    } else {
+      (c, evPrim, evNull) => code"$evPrim = ($integralType) ${timestampToLongCode(c)};"
+    }
   }
 
   private[this] def castIntegralTypeToIntegralTypeExactCode(integralType: String): CastFunction = {
@@ -725,6 +1022,9 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
       (c, evPrim, evNull) => code"$evPrim = Integer.parseInt($c);"
     case BooleanType =>
       (c, evPrim, evNull) => code"$evPrim = $c ? 1 : 0;"
+    case DateType =>
+      (c, evPrim, evNull) => code"$evNull = true;"
+    case TimestampType => castTimestampToIntegralTypeCode(ctx, "int")
     case LongType if ansiEnabled => castIntegralTypeToIntegralTypeExactCode("int")
     case FloatType | DoubleType if ansiEnabled =>
       castFractionToIntegralTypeCode("int")
@@ -739,6 +1039,10 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
       (c, evPrim, evNull) => code"$evPrim = Long.parseLong($c);"
     case BooleanType =>
       (c, evPrim, evNull) => code"$evPrim = $c ? 1L : 0L;"
+    case DateType =>
+      (c, evPrim, evNull) => code"$evNull = true;"
+    case TimestampType =>
+      (c, evPrim, evNull) => code"$evPrim = (long) ${timestampToLongCode(c)};"
     case FloatType | DoubleType if ansiEnabled =>
       castFractionToIntegralTypeCode("long")
     case x: NumericType =>
@@ -770,6 +1074,10 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
         """
       case BooleanType =>
         (c, evPrim, evNull) => code"$evPrim = $c ? 1.0f : 0.0f;"
+      case DateType =>
+        (c, evPrim, evNull) => code"$evNull = true;"
+      case TimestampType =>
+        (c, evPrim, evNull) => code"$evPrim = (float) (${timestampToDoubleCode(c)});"
       case x: NumericType =>
         (c, evPrim, evNull) => code"$evPrim = (float) $c;"
     }
@@ -800,6 +1108,10 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
         """
       case BooleanType =>
         (c, evPrim, evNull) => code"$evPrim = $c ? 1.0d : 0.0d;"
+      case DateType =>
+        (c, evPrim, evNull) => code"$evNull = true;"
+      case TimestampType =>
+        (c, evPrim, evNull) => code"$evPrim = ${timestampToDoubleCode(c)};"
       case x: NumericType =>
         (c, evPrim, evNull) => code"$evPrim = (double) $c;"
     }
@@ -908,6 +1220,9 @@ abstract class CastBase extends UnaryExpression with NullIntolerant {
 case class Cast(child: Expression, dataType: DataType, timeZoneId: Option[String] = None)
   extends CastBase {
   println("cast", child, " => ", dataType)
+
+  override def withTimeZone(timeZoneId: String): TimeZoneAwareExpression =
+    copy(timeZoneId = Option(timeZoneId))
 
   override protected val ansiEnabled: Boolean = false
 

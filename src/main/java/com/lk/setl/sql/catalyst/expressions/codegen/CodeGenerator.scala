@@ -9,7 +9,7 @@ import scala.util.control.NonFatal
 import com.google.common.cache.{CacheBuilder, CacheLoader}
 import com.google.common.util.concurrent.{ExecutionError, UncheckedExecutionException}
 import com.lk.setl.Logging
-import com.lk.setl.sql.{ArrayData, GenericRow, Row}
+import com.lk.setl.sql.{ArrayData, CalendarInterval, GenericRow, Row}
 import org.codehaus.commons.compiler.CompileException
 import org.codehaus.janino.{ByteArrayClassLoader, ClassBodyEvaluator, InternalCompilerException, SimpleCompiler}
 import org.codehaus.janino.util.ClassFile
@@ -1365,6 +1365,7 @@ object CodeGenerator extends Logging {
     // 默认导入的类
     evaluator.setDefaultImports(
       classOf[Row].getName,
+      classOf[CalendarInterval].getName,
       classOf[ArrayData].getName,
       classOf[Expression].getName
     )
@@ -1770,12 +1771,13 @@ object CodeGenerator extends Logging {
    */
   def javaType(dt: DataType): String = dt match {
     case BooleanType => JAVA_BOOLEAN
-    case IntegerType => JAVA_INT
-    case LongType=> JAVA_LONG
+    case IntegerType | DateType => JAVA_INT
+    case LongType | TimestampType => JAVA_LONG
     case FloatType => JAVA_FLOAT
     case DoubleType => JAVA_DOUBLE
     case BinaryType => "byte[]"
     case StringType => "String"
+    case CalendarIntervalType => "CalendarInterval"
     case _: StructType => "Row"
     case _: ArrayType => "ArrayData"
     case _ => "Object"
@@ -1783,12 +1785,13 @@ object CodeGenerator extends Logging {
 
   def javaClass(dt: DataType): Class[_] = dt match {
     case BooleanType => java.lang.Boolean.TYPE
-    case IntegerType  => java.lang.Integer.TYPE
-    case LongType => java.lang.Long.TYPE
+    case IntegerType | DateType => java.lang.Integer.TYPE
+    case LongType | TimestampType => java.lang.Long.TYPE
     case FloatType => java.lang.Float.TYPE
     case DoubleType => java.lang.Double.TYPE
     case BinaryType => classOf[Array[Byte]]
     case StringType => classOf[String]
+    case CalendarIntervalType => classOf[CalendarInterval]
     case _: StructType => classOf[Row]
     case _: ArrayType => classOf[ArrayData]
     case _ => classOf[Object]

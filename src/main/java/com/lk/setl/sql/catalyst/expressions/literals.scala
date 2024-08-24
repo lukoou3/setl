@@ -1,9 +1,11 @@
 package com.lk.setl.sql.catalyst.expressions
 
-import com.lk.setl.sql.{AnalysisException, Row}
+import com.lk.setl.sql.{AnalysisException, CalendarInterval, Row}
 import com.lk.setl.sql.catalyst.CatalystTypeConverters
 import com.lk.setl.sql.catalyst.expressions.codegen.{CodeGenerator, CodegenContext, ExprCode, JavaCode}
 import com.lk.setl.sql.types._
+import com.lk.setl.sql.catalyst.util.DateTimeUtils
+import com.lk.setl.sql.catalyst.util.DateTimeUtils.instantToMicros
 import com.lk.setl.util.Utils
 
 import java.lang.{Boolean => JavaBoolean}
@@ -12,6 +14,8 @@ import java.lang.{Double => JavaDouble}
 import java.lang.{Float => JavaFloat}
 import java.lang.{Integer => JavaInteger}
 import java.lang.{Long => JavaLong}
+import java.sql.{Date, Timestamp}
+import java.time.{Instant, LocalDate}
 import java.util
 import java.util.Objects
 
@@ -27,6 +31,11 @@ object Literal {
     case f: Float => Literal(f, FloatType)
     case s: String => Literal(s, StringType)
     case b: Boolean => Literal(b, BooleanType)
+    case i: Instant => Literal(instantToMicros(i), TimestampType)
+    case t: Timestamp => Literal(DateTimeUtils.fromJavaTimestamp(t), TimestampType)
+    case ld: LocalDate => Literal(ld.toEpochDay.toInt, DateType)
+    case d: Date => Literal(DateTimeUtils.fromJavaDate(d), DateType)
+    case i: CalendarInterval => Literal(i, CalendarIntervalType)
     case null => Literal(null, NullType)
     case v: Literal => v
     case _ =>
@@ -89,10 +98,11 @@ object Literal {
     def doValidate(v: Any, dataType: DataType): Boolean = dataType match {
       case _ if v == null => true
       case BooleanType => v.isInstanceOf[Boolean]
-      case IntegerType => v.isInstanceOf[Int]
-      case LongType => v.isInstanceOf[Long]
+      case IntegerType | DateType => v.isInstanceOf[Int]
+      case LongType | TimestampType => v.isInstanceOf[Long]
       case FloatType => v.isInstanceOf[Float]
       case DoubleType => v.isInstanceOf[Double]
+      case CalendarIntervalType => v.isInstanceOf[CalendarInterval]
       case StringType => v.isInstanceOf[String]
       case st: StructType =>
         v.isInstanceOf[Row] && {
@@ -212,7 +222,7 @@ case class Literal (value: Any, dataType: DataType) extends LeafExpression {
         ExprCode.forNonNullValue(JavaCode.literal(code, dataType))
       }
       dataType match {
-        case BooleanType | IntegerType =>
+        case BooleanType | IntegerType  | DateType =>
           toExprCode(value.toString)
         case FloatType =>
           value.asInstanceOf[Float] match {
@@ -236,7 +246,7 @@ case class Literal (value: Any, dataType: DataType) extends LeafExpression {
             case _ =>
               toExprCode(s"${value}D")
           }
-        case LongType =>
+        case TimestampType | LongType =>
           toExprCode(s"${value}L")
         case _ =>
           val constRef = ctx.addReferenceObj("literal", value, javaType)

@@ -129,3 +129,16 @@ case class TimeWindow(windowAssigner: TimeWindowAssigner, windowAttributes: Seq[
   override def producedAttributes: AttributeSet = AttributeSet(windowAttributes)
   override def output: Seq[Attribute] = child.output ++ windowAttributes
 }
+
+/**
+ * A relation with one row. This is used in "SELECT ..." without a from clause.
+ */
+case class OneRowRelation() extends LeafNode {
+  override def output: Seq[Attribute] = Nil
+
+  override def makeCopy(newArgs: Array[AnyRef]): OneRowRelation = {
+    val newCopy = OneRowRelation()
+    newCopy.copyTagsFrom(this)
+    newCopy
+  }
+}

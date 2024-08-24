@@ -1,13 +1,15 @@
 package com.lk.setl.sql.catalyst.parser
 
 import com.lk.setl.Logging
-import com.lk.setl.sql.AnalysisException
+import com.lk.setl.sql.{AnalysisException, CalendarInterval}
 import com.lk.setl.sql.catalyst.analysis._
 import com.lk.setl.sql.catalyst.expressions._
 import com.lk.setl.sql.catalyst.expressions.aggregate.{First, Last}
 import com.lk.setl.sql.catalyst.parser.ParserUtils.{EnhancedLogicalPlan, string, stringWithoutUnescape, withOrigin}
 import com.lk.setl.sql.catalyst.parser.SqlBaseParser._
-import com.lk.setl.sql.catalyst.plans.logical.{Filter, Generate, Aggregate, LogicalPlan, Project}
+import com.lk.setl.sql.catalyst.plans.logical.{Aggregate, Filter, Generate, LogicalPlan, Project}
+import com.lk.setl.sql.catalyst.util.IntervalUtils
+import com.lk.setl.sql.catalyst.util.IntervalUtils.IntervalUnit
 import com.lk.setl.sql.types._
 import org.antlr.v4.runtime.ParserRuleContext
 import org.antlr.v4.runtime.tree.{ParseTree, TerminalNode}
@@ -645,6 +647,117 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     }
   }
 
+  /**
+   * Create a [[CalendarInterval]] literal expression. Two syntaxes are supported:
+   * - multiple unit value pairs, for instance: interval 2 months 2 days.
+   * - from-to unit, for instance: interval '1-2' year to month.
+   */
+  override def visitInterval(ctx: IntervalContext): Literal = withOrigin(ctx) {
+    Literal(parseIntervalLiteral(ctx), CalendarIntervalType)
+  }
+
+  /**
+   * Create a [[CalendarInterval]] object
+   */
+  protected def parseIntervalLiteral(ctx: IntervalContext): CalendarInterval = withOrigin(ctx) {
+    if (ctx.errorCapturingMultiUnitsInterval != null) {
+      val innerCtx = ctx.errorCapturingMultiUnitsInterval
+      if (innerCtx.unitToUnitInterval != null) {
+        throw new ParseException(
+          "Can only have a single from-to unit in the interval literal syntax",
+          innerCtx.unitToUnitInterval)
+      }
+      visitMultiUnitsInterval(innerCtx.multiUnitsInterval)
+    } else if (ctx.errorCapturingUnitToUnitInterval != null) {
+      val innerCtx = ctx.errorCapturingUnitToUnitInterval
+      if (innerCtx.error1 != null || innerCtx.error2 != null) {
+        val errorCtx = if (innerCtx.error1 != null) innerCtx.error1 else innerCtx.error2
+        throw new ParseException(
+          "Can only have a single from-to unit in the interval literal syntax",
+          errorCtx)
+      }
+      visitUnitToUnitInterval(innerCtx.body)
+    } else {
+      throw new ParseException("at least one time unit should be given for interval literal", ctx)
+    }
+  }
+
+  /**
+   * Creates a [[CalendarInterval]] with multiple unit value pairs, e.g. 1 YEAR 2 DAYS.
+   */
+  override def visitMultiUnitsInterval(ctx: MultiUnitsIntervalContext): CalendarInterval = {
+    withOrigin(ctx) {
+      val units = ctx.unit.asScala
+      val values = ctx.intervalValue().asScala
+      try {
+        assert(units.length == values.length)
+        val kvs = units.indices.map { i =>
+          val u = units(i).getText
+          val v = if (values(i).STRING() != null) {
+            val value = string(values(i).STRING())
+            // SPARK-32840: For invalid cases, e.g. INTERVAL '1 day 2' hour,
+            // INTERVAL 'interval 1' day, we need to check ahead before they are concatenated with
+            // units and become valid ones, e.g. '1 day 2 hour'.
+            // Ideally, we only ensure the value parts don't contain any units here.
+            if (value.exists(Character.isLetter)) {
+              throw new ParseException("Can only use numbers in the interval value part for" +
+                s" multiple unit value pairs interval form, but got invalid value: $value", ctx)
+            }
+            value
+          } else {
+            values(i).getText
+          }
+          " " + v + " " + u
+        }
+        IntervalUtils.stringToInterval(kvs.mkString(""))
+      } catch {
+        case i: IllegalArgumentException =>
+          val e = new ParseException(i.getMessage, ctx)
+          e.setStackTrace(i.getStackTrace)
+          throw e
+      }
+    }
+  }
+
+  /**
+   * Creates a [[CalendarInterval]] with from-to unit, e.g. '2-1' YEAR TO MONTH.
+   */
+  override def visitUnitToUnitInterval(ctx: UnitToUnitIntervalContext): CalendarInterval = {
+    withOrigin(ctx) {
+      val value = Option(ctx.intervalValue.STRING).map(string).getOrElse {
+        throw new ParseException("The value of from-to unit must be a string", ctx.intervalValue)
+      }
+      try {
+        val from = ctx.from.getText.toLowerCase(Locale.ROOT)
+        val to = ctx.to.getText.toLowerCase(Locale.ROOT)
+        (from, to) match {
+          case ("year", "month") =>
+            IntervalUtils.fromYearMonthString(value)
+          case ("day", "hour") =>
+            IntervalUtils.fromDayTimeString(value, IntervalUnit.DAY, IntervalUnit.HOUR)
+          case ("day", "minute") =>
+            IntervalUtils.fromDayTimeString(value, IntervalUnit.DAY, IntervalUnit.MINUTE)
+          case ("day", "second") =>
+            IntervalUtils.fromDayTimeString(value, IntervalUnit.DAY, IntervalUnit.SECOND)
+          case ("hour", "minute") =>
+            IntervalUtils.fromDayTimeString(value, IntervalUnit.HOUR, IntervalUnit.MINUTE)
+          case ("hour", "second") =>
+            IntervalUtils.fromDayTimeString(value, IntervalUnit.HOUR, IntervalUnit.SECOND)
+          case ("minute", "second") =>
+            IntervalUtils.fromDayTimeString(value, IntervalUnit.MINUTE, IntervalUnit.SECOND)
+          case _ =>
+            throw new ParseException(s"Intervals FROM $from TO $to are not supported.", ctx)
+        }
+      } catch {
+        // Handle Exceptions thrown by CalendarInterval
+        case e: IllegalArgumentException =>
+          val pe = new ParseException(e.getMessage, ctx)
+          pe.setStackTrace(e.getStackTrace)
+          throw pe
+      }
+    }
+  }
+
   /* ********************************************************************************************
    * DataType parsing
    * ******************************************************************************************** */
@@ -662,6 +775,9 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
       case ("double", Nil) => DoubleType
       case ("string", Nil) => StringType
       case ("binary", Nil) => BinaryType
+      case ("date", Nil) => DateType
+      case ("timestamp", Nil) => TimestampType
+      // case ("interval", Nil) => CalendarIntervalType
       case ("void", Nil) => NullType
       case (dt, params) =>
         val dtStr = if (params.nonEmpty) s"$dt(${params.mkString(",")})" else dt

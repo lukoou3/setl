@@ -8,6 +8,7 @@ import com.lk.setl.sql.catalyst.plans.logical
 import com.lk.setl.sql.catalyst.plans.logical.{Aggregate, AnalysisHelper, Generate, LogicalPlan, Project, RelationPlaceholder, TimeWindow}
 import com.lk.setl.sql.catalyst.rules.{Rule, RuleExecutor}
 import com.lk.setl.sql.catalyst.util.toPrettySQL
+import com.lk.setl.sql.types.{CalendarIntervalType, DateType, StringType, TimestampType}
 
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -66,6 +67,8 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
       ResolveAliases ::
       GlobalAggregates ::
       TimeWindowing ::
+      ResolveTimeZone ::
+      ResolveBinaryArithmetic ::
       TypeCoercion.typeCoercionRules : _*
     )
   )
@@ -294,6 +297,72 @@ class Analyzer(val tempViews: Map[String, RelationPlaceholder]) extends RuleExec
     def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsUp {
       case Project(projectList, child) if child.resolved && hasUnresolvedAlias(projectList) =>
         Project(assignAliases(projectList), child)
+    }
+  }
+
+
+  /**
+   * For [[Add]]:
+   * 1. if both side are interval, stays the same;
+   * 2. else if one side is date and the other is interval,
+   *    turns it to [[DateAddInterval]];
+   * 3. else if one side is interval, turns it to [[TimeAdd]];
+   * 4. else if one side is date, turns it to [[DateAdd]] ;
+   * 5. else stays the same.
+   *
+   * For [[Subtract]]:
+   * 1. if both side are interval, stays the same;
+   * 2. else if the left side is date and the right side is interval,
+   *    turns it to [[DateAddInterval(l, -r)]];
+   * 3. else if the right side is an interval, turns it to [[TimeAdd(l, -r)]];
+   * 4. else if one side is timestamp, turns it to [[SubtractTimestamps]];
+   * 5. else if the right side is date, turns it to [[DateDiff]]/[[SubtractDates]];
+   * 6. else if the left side is date, turns it to [[DateSub]];
+   * 7. else turns it to stays the same.
+   *
+   * For [[Multiply]]:
+   * 1. If one side is interval, turns it to [[MultiplyInterval]];
+   * 2. otherwise, stays the same.
+   *
+   * For [[Divide]]:
+   * 1. If the left side is interval, turns it to [[DivideInterval]];
+   * 2. otherwise, stays the same.
+   */
+  object ResolveBinaryArithmetic extends Rule[LogicalPlan] {
+    override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsUp {
+      case p: LogicalPlan => p.transformExpressionsUp {
+        case a @ Add(l, r, f) if a.childrenResolved => (l.dataType, r.dataType) match {
+          case (CalendarIntervalType, CalendarIntervalType) => a
+          case (DateType, CalendarIntervalType) => DateAddInterval(l, r, ansiEnabled = f)
+          case (_, CalendarIntervalType) => Cast(TimeAdd(l, r), l.dataType)
+          case (CalendarIntervalType, DateType) => DateAddInterval(r, l, ansiEnabled = f)
+          case (CalendarIntervalType, _) => Cast(TimeAdd(r, l), r.dataType)
+          case (DateType, dt) if dt != StringType => DateAdd(l, r)
+          case (dt, DateType) if dt != StringType => DateAdd(r, l)
+          case _ => a
+        }
+        case s @ Subtract(l, r, f) if s.childrenResolved => (l.dataType, r.dataType) match {
+          case (CalendarIntervalType, CalendarIntervalType) => s
+          case (DateType, CalendarIntervalType) =>
+            DatetimeSub(l, r, DateAddInterval(l, UnaryMinus(r, f), ansiEnabled = f))
+          case (_, CalendarIntervalType) =>
+            Cast(DatetimeSub(l, r, TimeAdd(l, UnaryMinus(r, f))), l.dataType)
+          case (TimestampType, _) => SubtractTimestamps(l, r)
+          case (_, TimestampType) => SubtractTimestamps(l, r)
+          case (_, DateType) => SubtractDates(l, r)
+          case (DateType, dt) if dt != StringType => DateSub(l, r)
+          case _ => s
+        }
+        case m @ Multiply(l, r, f) if m.childrenResolved => (l.dataType, r.dataType) match {
+          case (CalendarIntervalType, _) => MultiplyInterval(l, r, f)
+          case (_, CalendarIntervalType) => MultiplyInterval(r, l, f)
+          case _ => m
+        }
+        case d @ Divide(l, r, f) if d.childrenResolved => (l.dataType, r.dataType) match {
+          case (CalendarIntervalType, _) => DivideInterval(l, r, f)
+          case _ => d
+        }
+      }
     }
   }
 

@@ -72,6 +72,21 @@ class ParserSuite extends AnyFunSuite {
     println(optimized)
   }
 
+  test("parseDateFunction") {
+    val schema = SqlUtils.parseStructType("d: int, date: date, t: bigint, tm: timestamp")
+    val tempViews = Map("tab" -> RelationPlaceholder(schema.toAttributes))
+    val sql = "select date + 1 a, date + INTERVAL 1 day b, tm + INTERVAL 1 day c, tm + INTERVAL 1 day 10 hour d from tab"
+    val singleStatement = new CatalystSqlParser().parsePlan(sql)
+    println(singleStatement)
+    val tracker = new QueryPlanningTracker
+    val logicalPlan = new QueryExecution(tempViews, singleStatement, tracker)
+    logicalPlan.assertAnalyzed()
+    val analyzed = logicalPlan.analyzed
+    val optimized = logicalPlan.optimizedPlan
+    println(analyzed)
+    println(optimized)
+  }
+
   test("parse") {
     val sql = "select id, name, split(name, '_') names, split(name, '_')[1] name1, age1 + age2 age from t where name like '%aa%'"
     val singleStatement = new CatalystSqlParser().parsePlan(sql)
